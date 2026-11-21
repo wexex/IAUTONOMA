@@ -60,138 +60,6 @@ if [[ $MODO_INTERNO -eq 0 ]]; then
     if [[ $ACABA_DE_DESPERTAR -eq 1 ]]; then
         "$DIR/ENTRADA" --interno "$ESTIMULO_DESPERTAR" >/dev/null 2>/dev/null
     fi
-
-    # Inhibicion natural: si el usuario corrige/rechaza, rebaja el ultimo recuerdo a ~DECAIMIENTO_CASTIGO horas de vida
-    if [[ -s "$HIPOCAMPO" ]]; then
-        if [[ -n "$ENTRADA" ]]; then
-            RECALC_CASTIGO=0
-            if [[ ! -s "$CACHE_CASTIGO" ]]; then
-                RECALC_CASTIGO=1
-            else
-                TXT_CACHE=$(jq -r '.texto // empty' "$CACHE_CASTIGO" 2>/dev/null)
-                if [[ "$TXT_CACHE" != "$CONCEPTO_CASTIGO" ]]; then RECALC_CASTIGO=1; fi
-            fi
-            if [[ $RECALC_CASTIGO -eq 1 ]]; then
-                PAY_CAS=$(jq -a -n --arg txt "$CONCEPTO_CASTIGO" '{input: $txt}')
-                RESP_CAS=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_CAS")
-                if [[ -n "$RESP_CAS" ]]; then
-                    jq -a -c --arg txt "$CONCEPTO_CASTIGO" 'if .data then {texto: $txt, embedding: (.data[0].embedding | map((. * 10000 | round) / 10000))} else empty end' < <(echo "$RESP_CAS") > "${CACHE_CASTIGO}.$$.tmp" 2>/dev/null
-                    if [[ -s "${CACHE_CASTIGO}.$$.tmp" ]]; then
-                        mv -f "${CACHE_CASTIGO}.$$.tmp" "$CACHE_CASTIGO" 2>/dev/null
-                    else
-                        rm -f "${CACHE_CASTIGO}.$$.tmp"
-                    fi
-                fi
-            fi
-
-            if [[ -s "$CACHE_CASTIGO" ]]; then
-                PAY_ENT_C=$(jq -a -n --arg txt "$ENTRADA" '{input: $txt}')
-                RESP_ENT_C=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_ENT_C")
-                if [[ -n "$RESP_ENT_C" ]]; then
-                    ES_CASTIGO=$(jq -n -r --argjson ucas "$UMBRAL_CASTIGO" --slurpfile cc "$CACHE_CASTIGO" --argjson re "$RESP_ENT_C" '
-                        if ($cc[0].embedding != null and $re.data != null) then
-                            ($cc[0].embedding[:1024]) as $vc |
-                            ($re.data[0].embedding[:1024]) as $ve |
-                            (($vc | map(. * .) | add | sqrt) + 0.000001) as $nc |
-                            (($ve | map(. * .) | add | sqrt) + 0.000001) as $ne |
-                            (([$vc, $ve] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($nc * $ne)) as $sim |
-                            if $sim >= $ucas then "1" else "0" end
-                        else
-                            "0"
-                        end
-                    ' 2>/dev/null)
-
-                    if [[ "$ES_CASTIGO" == "1" ]]; then
-                        H_HIP=$(( ${DECAIMIENTO_HIPOCAMPO} ))
-                        H_MEM=$(( ${DECAIMIENTO_MEMORIA} ))
-                        H_PER=$(( ${DECAIMIENTO_PERSISTENTE} ))
-                        H_CAS=$(( ${DECAIMIENTO_CASTIGO} ))
-
-                        NORM_OBJ_HIP=$(jq -n --argjson u "$UMBRAL_SIM" --argjson p "$PESO_INICIAL" --argjson h "$H_HIP" --argjson c "$H_CAS" '$u * (((($p / $u) | log) * ($c / $h)) | exp)')
-                        NORM_OBJ_MEM=$(jq -n --argjson u "$UMBRAL_SIM" --argjson p "$PESO_INICIAL" --argjson h "$H_MEM" --argjson c "$H_CAS" '$u * (((($p / $u) | log) * ($c / $h)) | exp)')
-                        NORM_OBJ_PER=$(jq -n --argjson u "$UMBRAL_SIM" --argjson h "$H_PER" --argjson c "$H_CAS" '$u * ((((1.0 / $u) | log) * ($c / $h)) | exp)')
-
-                        VEC_FALLO=$(jq -c -s '.[-1].embedding // null' "$HIPOCAMPO" 2>/dev/null)
-                        if [[ -n "$VEC_FALLO" ]]; then
-                            if [[ "$VEC_FALLO" != "null" ]]; then
-                                HIPO_INH=$(jq -a -c -s --argjson nobj "$NORM_OBJ_HIP" '
-                                    (length - 1) as $ult |
-                                    to_entries |
-                                    map(
-                                        if (.key == $ult and .value.embedding != null) then
-                                            (.value.embedding[:1024]) as $v |
-                                            (($v | map(. * .) | add | sqrt) + 0.000001) as $nv |
-                                            if $nv > $nobj then
-                                                .value + {embedding: ($v | map(((. / $nv) * $nobj * 10000 | round) / 10000))}
-                                            else
-                                                .value
-                                            end
-                                        else
-                                            .value
-                                        end
-                                    )[ ]
-                                ' "$HIPOCAMPO" 2>/dev/null)
-                                if [[ -n "$HIPO_INH" ]]; then
-                                    echo "$HIPO_INH" > "${HIPOCAMPO}.$$.tmp"
-                                    mv -f "${HIPOCAMPO}.$$.tmp" "$HIPOCAMPO" 2>/dev/null
-                                fi
-
-                                inhibir_capa() {
-                                    INH_IND="$1"
-                                    INH_OBJ="$2"
-                                    if [[ -s "$INH_IND" ]]; then
-                                        PARTS_INH=$(jq -r -s --argjson q "$VEC_FALLO" --argjson umb "$UMBRAL_SIM" '
-                                            (($q | map(. * .) | add | sqrt) + 0.000001) as $nq |
-                                            [
-                                                .[ ] |
-                                                select(.embedding != null) |
-                                                ((.embedding | map(. * .) | add | sqrt) + 0.000001) as $ne |
-                                                . + {sim: (([.embedding, $q] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($ne * $nq))} |
-                                                select(.sim >= $umb)
-                                            ] | sort_by(-.sim)[:2][ ].archivo
-                                        ' "$INH_IND" 2>/dev/null)
-                                        if [[ -n "$PARTS_INH" ]]; then
-                                            while IFS= read -r p_inh; do
-                                                if [[ -n "$p_inh" ]]; then
-                                                    if [[ -s "$DIR_MEMORIA/$p_inh" ]]; then
-                                                        PART_INH=$(jq -a -c -s --argjson q "$VEC_FALLO" --argjson uref "$UMBRAL_REFUERZO" --argjson nobj "$INH_OBJ" '
-                                                            (($q | map(. * .) | add | sqrt) + 0.000001) as $nq |
-                                                            [
-                                                                .[ ] |
-                                                                if .embedding != null then
-                                                                    (.embedding[:1024]) as $v |
-                                                                    (($v | map(. * .) | add | sqrt) + 0.000001) as $nv |
-                                                                    (([$v, $q] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($nv * $nq)) as $sim |
-                                                                    if ($sim >= $uref and $nv > $nobj) then
-                                                                        . + {embedding: ($v | map(((. / $nv) * $nobj * 10000 | round) / 10000))}
-                                                                    else
-                                                                        .
-                                                                    end
-                                                                else
-                                                                    .
-                                                                end
-                                                            ][ ]
-                                                        ' "$DIR_MEMORIA/$p_inh" 2>/dev/null)
-                                                        if [[ -n "$PART_INH" ]]; then
-                                                            echo "$PART_INH" > "$DIR_MEMORIA/${p_inh}.$$.tmp"
-                                                            mv -f "$DIR_MEMORIA/${p_inh}.$$.tmp" "$DIR_MEMORIA/$p_inh" 2>/dev/null
-                                                        fi
-                                                    fi
-                                                fi
-                                            done < <(printf '%s\n' "$PARTS_INH")
-                                        fi
-                                    fi
-                                }
-
-                                inhibir_capa "$INDICE_EPISODICA" "$NORM_OBJ_MEM"
-                                inhibir_capa "$INDICE_PERSISTENTE" "$NORM_OBJ_PER"
-                            fi
-                        fi
-                    fi
-                fi
-            fi
-        fi
-    fi
 else
     if ! curl -sf "http://${HOST}:${PUERTO}/health" >/dev/null 2>/dev/null; then
         exit 0
@@ -209,11 +77,12 @@ RESPUESTA_UNA_LINEA="${RESPUESTA//$'\r'/ }"; RESPUESTA_UNA_LINEA="${RESPUESTA_UN
 
 LINEA_LOG="Peticion: $SEP_USUARIO $ENTRADA_UNA_LINEA | Respuesta: $SEP_IA $RESPUESTA_UNA_LINEA"
 
-# Funcion compartida: enruta un turno a su particion, consolida/refuerza y actualiza el indice
+# Funcion compartida: enruta un turno a su particion, reconsolida/refuerza (LTP) o atenua por divergencia (LTD) y actualiza el indice
 guardar_en_capa() {
     CAPA_INDICE="$1"
     CAPA_PREFIJO="$2"
     CAPA_TURNO="$3"
+    CAPA_NORM_OBJ="$4"
 
     if [[ ! -f "$CAPA_INDICE" ]]; then > "$CAPA_INDICE"; fi
 
@@ -238,42 +107,50 @@ guardar_en_capa() {
 
     if [[ -n "$PARTICION_GANADORA" ]]; then
         if [[ -s "$DIR_MEMORIA/$PARTICION_GANADORA" ]]; then
-            PART_ACTUALIZADA=$(jq -a -c -s --argjson uref "$UMBRAL_REFUERZO" --argjson fref "$FACTOR_REFUERZO" '
+            PART_ACTUALIZADA=$(jq -a -c -s --argjson umb "$UMBRAL_SIM" --argjson uref "$UMBRAL_REFUERZO" --argjson fref "$FACTOR_REFUERZO" --argjson nobj "$CAPA_NORM_OBJ" '
                 (.[0:-1]) as $items |
                 (.[-1]) as $nuevo |
                 if $nuevo.embedding == null then
                     ($items + [$nuevo])[ ]
                 else
-                    (($nuevo.embedding | map(. * .) | add | sqrt) + 0.000001) as $nq |
+                    (($nuevo.embedding[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nq |
+                    ($nuevo.embedding[:1024] | map(. / $nq)) as $u_nuevo |
                     (
                         [
                             $items[ ] |
                             if .embedding != null then
-                                ((.embedding | map(. * .) | add | sqrt) + 0.000001) as $ne |
-                                . + {_sim: (([.embedding, $nuevo.embedding] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($ne * $nq))}
+                                (.embedding[:1024]) as $v |
+                                (($v | map(. * .) | add | sqrt) + 0.000001) as $ne |
+                                . + {_sim: (([$v, $nuevo.embedding[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($ne * $nq)), _ne: $ne}
                             else
-                                . + {_sim: 0}
+                                . + {_sim: 0, _ne: 0}
                             end
                         ]
                     ) as $marcados |
                     ([ $marcados[ ] | select(._sim >= $uref) ]) as $coincidentes |
                     if ($coincidentes | length) > 0 then
-                        ($coincidentes | sort_by(-._sim) | .[0].embedding[:1024]) as $base_emb |
-                        ($base_emb | map(. * $fref)) as $v_ref |
-                        (($v_ref | map(. * .) | add | sqrt) + 0.000001) as $n_ref |
+                        ($coincidentes | sort_by(-._sim) | .[0]._ne) as $n_base |
+                        (if ($n_base * $fref) > $nq then ($n_base * $fref) else $nq end) as $n_bruto |
+                        (if $n_bruto > 1.0 then 1.0 else $n_bruto end) as $n_ref |
+                        ($u_nuevo | map((. * $n_ref * 10000 | round) / 10000)) as $emb_final |
                         (
-                            if $n_ref > 1.0 then
-                                ($v_ref | map((. / $n_ref * 10000 | round) / 10000))
-                            else
-                                ($v_ref | map((. * 10000 | round) / 10000))
-                            end
-                        ) as $emb_final |
-                        (
-                            [ $marcados[ ] | select(._sim < $uref) | del(._sim) ] +
+                            [ $marcados[ ] | select(._sim < $uref) | del(._sim, ._ne) ] +
                             [{fecha: $nuevo.fecha, messages: $nuevo.messages, embedding: $emb_final}]
                         )[ ]
                     else
-                        ([ $marcados[ ] | del(._sim) ] + [$nuevo])[ ]
+                        ([ $marcados | to_entries[ ] | select(.value._sim >= $umb and .value._sim < $uref) ] | sort_by(-.value._sim) | .[0].key // -1) as $k_ltd |
+                        (
+                            [
+                                $marcados | to_entries[ ] |
+                                if ($k_ltd >= 0 and .key == $k_ltd and .value._ne > $nobj) then
+                                    (.value.embedding[:1024]) as $v |
+                                    (.value._ne) as $ne |
+                                    (.value | del(._sim, ._ne)) + {embedding: ($v | map(((. / $ne) * $nobj * 10000 | round) / 10000))}
+                                else
+                                    (.value | del(._sim, ._ne))
+                                end
+                            ] + [$nuevo]
+                        )[ ]
                     end
                 end
             ' < <(cat "$DIR_MEMORIA/$PARTICION_GANADORA"; echo "$CAPA_TURNO"))
@@ -377,22 +254,136 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
         embedding: (if .data then (.data[0].embedding | map(((. * $peso) * 10000 | round) / 10000)) else null end)
     }' < <(echo "$RESP_MEM"))
 
-    # 1. Actualizar Hipocampo real (ultimos $MAX_HIPOCAMPO turnos del momento presente)
-    HIPO_NUEVO=$(jq -a -c -s --argjson maxh "$MAX_HIPOCAMPO" '.[-$maxh:][ ]' < <(cat "$HIPOCAMPO"; echo "$LINEA_TURNO"))
+    H_HIP=$(( ${DECAIMIENTO_HIPOCAMPO} ))
+    H_MEM=$(( ${DECAIMIENTO_MEMORIA} ))
+    H_PER=$(( ${DECAIMIENTO_PERSISTENTE} ))
+    H_CAS=$(( ${DECAIMIENTO_CASTIGO} ))
+
+    NORM_OBJ_HIP=$(jq -n --argjson u "$UMBRAL_SIM" --argjson p "$PESO_INICIAL" --argjson h "$H_HIP" --argjson c "$H_CAS" '$u * (((($p / $u) | log) * ($c / $h)) | exp)')
+    NORM_OBJ_MEM=$(jq -n --argjson u "$UMBRAL_SIM" --argjson p "$PESO_INICIAL" --argjson h "$H_MEM" --argjson c "$H_CAS" '$u * (((($p / $u) | log) * ($c / $h)) | exp)')
+    NORM_OBJ_PER=$(jq -n --argjson u "$UMBRAL_SIM" --argjson h "$H_PER" --argjson c "$H_CAS" '$u * ((((1.0 / $u) | log) * ($c / $h)) | exp)')
+
+    # 1. Actualizar Hipocampo real con plasticidad LTP / LTD (ultimos $MAX_HIPOCAMPO turnos del momento presente)
+    HIPO_NUEVO=$(jq -a -c -s --argjson maxh "$MAX_HIPOCAMPO" --argjson umb "$UMBRAL_SIM" --argjson uref "$UMBRAL_REFUERZO" --argjson fref "$FACTOR_REFUERZO" --argjson nobj "$NORM_OBJ_HIP" '
+        (.[0:-1]) as $items |
+        (.[-1]) as $nuevo |
+        if ($nuevo.embedding == null or ($items | length) == 0) then
+            ($items + [$nuevo])[-$maxh:][ ]
+        else
+            (($nuevo.embedding[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nq |
+            ($nuevo.embedding[:1024] | map(. / $nq)) as $u_nuevo |
+            (
+                [
+                    $items[ ] |
+                    if .embedding != null then
+                        (.embedding[:1024]) as $v |
+                        (($v | map(. * .) | add | sqrt) + 0.000001) as $ne |
+                        . + {_sim: (([$v, $nuevo.embedding[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($ne * $nq)), _ne: $ne}
+                    else
+                        . + {_sim: 0, _ne: 0}
+                    end
+                ]
+            ) as $marcados |
+            ([ $marcados[ ] | select(._sim >= $uref) ]) as $coincidentes |
+            if ($coincidentes | length) > 0 then
+                ($coincidentes | sort_by(-._sim) | .[0]._ne) as $n_base |
+                (if ($n_base * $fref) > $nq then ($n_base * $fref) else $nq end) as $n_bruto |
+                (if $n_bruto > 1.0 then 1.0 else $n_bruto end) as $n_ref |
+                ($u_nuevo | map((. * $n_ref * 10000 | round) / 10000)) as $emb_final |
+                (
+                    [ $marcados[ ] | select(._sim < $uref) | del(._sim, ._ne) ] +
+                    [{fecha: $nuevo.fecha, messages: $nuevo.messages, embedding: $emb_final}]
+                )[-$maxh:][ ]
+            else
+                ([ $marcados | to_entries[ ] | select(.value._sim >= $umb and .value._sim < $uref) ] | sort_by(-.value._sim) | .[0].key // -1) as $k_ltd |
+                (
+                    [
+                        $marcados | to_entries[ ] |
+                        if ($k_ltd >= 0 and .key == $k_ltd and .value._ne > $nobj) then
+                            (.value.embedding[:1024]) as $v |
+                            (.value._ne) as $ne |
+                            (.value | del(._sim, ._ne)) + {embedding: ($v | map(((. / $ne) * $nobj * 10000 | round) / 10000))}
+                        else
+                            (.value | del(._sim, ._ne))
+                        end
+                    ] + [$nuevo]
+                )[-$maxh:][ ]
+            end
+        end
+    ' < <(cat "$HIPOCAMPO"; echo "$LINEA_TURNO"))
     if [[ -n "$HIPO_NUEVO" ]]; then
         echo "$HIPO_NUEVO" > "${HIPOCAMPO}.$$.tmp"
         mv -f "${HIPOCAMPO}.$$.tmp" "$HIPOCAMPO"
     fi
 
     # 2. Guardar en Memoria Episodica particionada
-    guardar_en_capa "$INDICE_EPISODICA" "$PREFIJO_EPISODICA" "$LINEA_TURNO"
+    guardar_en_capa "$INDICE_EPISODICA" "$PREFIJO_EPISODICA" "$LINEA_TURNO" "$NORM_OBJ_MEM"
 
-    # 3. Ascenso a Memoria Persistente particionada si alcanza norma >= $UMBRAL_PERSISTENTE
+    # 3. Ascenso a Memoria Persistente particionada si alcanza norma >= $UMBRAL_PERSISTENTE, o LTD si colisiona con un recuerdo persistente
     CANDIDATO_PER=$(jq -a -c -s --argjson uper "$UMBRAL_PERSISTENTE" '
         [ .[ ] | select(.embedding != null and ((.embedding | map(. * .) | add | sqrt) >= $uper)) ][-1] // empty
     ' "$DIR_MEMORIA/$ULTIMA_PARTICION")
     if [[ -n "$CANDIDATO_PER" ]]; then
-        guardar_en_capa "$INDICE_PERSISTENTE" "$PREFIJO_PERSISTENTE" "$CANDIDATO_PER"
+        guardar_en_capa "$INDICE_PERSISTENTE" "$PREFIJO_PERSISTENTE" "$CANDIDATO_PER" "$NORM_OBJ_PER"
+    elif [[ -s "$INDICE_PERSISTENTE" ]]; then
+        PART_PER_LTD=$(jq -r -s --argjson umb "$UMBRAL_SIM" '
+            (.[0:-1]) as $idx |
+            (.[-1]) as $nuevo |
+            if $nuevo.embedding != null then
+                (($nuevo.embedding | map(. * .) | add | sqrt) + 0.000001) as $nq |
+                (
+                    [
+                        $idx[ ] |
+                        select(.embedding != null) |
+                        ((.embedding | map(. * .) | add | sqrt) + 0.000001) as $ne |
+                        . + {sim: (([.embedding, $nuevo.embedding] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($ne * $nq))} |
+                        select(.sim >= $umb)
+                    ] | sort_by(-.sim) | .[0].archivo // empty
+                )
+            else
+                empty
+            end
+        ' < <(cat "$INDICE_PERSISTENTE"; echo "$LINEA_TURNO"))
+        if [[ -n "$PART_PER_LTD" ]]; then
+            if [[ -s "$DIR_MEMORIA/$PART_PER_LTD" ]]; then
+                PER_LTD_ACT=$(jq -a -c -s --argjson umb "$UMBRAL_SIM" --argjson uref "$UMBRAL_REFUERZO" --argjson nobj "$NORM_OBJ_PER" '
+                    (.[0:-1]) as $items |
+                    (.[-1]) as $nuevo |
+                    if $nuevo.embedding == null then
+                        $items[ ]
+                    else
+                        (($nuevo.embedding[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nq |
+                        (
+                            [
+                                $items[ ] |
+                                if .embedding != null then
+                                    (.embedding[:1024]) as $v |
+                                    (($v | map(. * .) | add | sqrt) + 0.000001) as $ne |
+                                    . + {_sim: (([$v, $nuevo.embedding[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($ne * $nq)), _ne: $ne}
+                                else
+                                    . + {_sim: 0, _ne: 0}
+                                end
+                            ]
+                        ) as $marcados |
+                        ([ $marcados | to_entries[ ] | select(.value._sim >= $umb and .value._sim < $uref) ] | sort_by(-.value._sim) | .[0].key // -1) as $k_ltd |
+                        [
+                            $marcados | to_entries[ ] |
+                            if ($k_ltd >= 0 and .key == $k_ltd and .value._ne > $nobj) then
+                                (.value.embedding[:1024]) as $v |
+                                (.value._ne) as $ne |
+                                (.value | del(._sim, ._ne)) + {embedding: ($v | map(((. / $ne) * $nobj * 10000 | round) / 10000))}
+                            else
+                                (.value | del(._sim, ._ne))
+                            end
+                        ][ ]
+                    end
+                ' < <(cat "$DIR_MEMORIA/$PART_PER_LTD"; echo "$LINEA_TURNO"))
+                if [[ -n "$PER_LTD_ACT" ]]; then
+                    echo "$PER_LTD_ACT" > "$DIR_MEMORIA/${PART_PER_LTD}.$$.tmp"
+                    mv -f "$DIR_MEMORIA/${PART_PER_LTD}.$$.tmp" "$DIR_MEMORIA/$PART_PER_LTD"
+                fi
+            fi
+        fi
     fi
 fi
 

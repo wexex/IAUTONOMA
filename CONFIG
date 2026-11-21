@@ -32,11 +32,8 @@ PESO_INICIAL="0.85"
 # Factor de refuerzo
 FACTOR_REFUERZO="1.10"
 
-# Castigo
+# Castigo (horas de vida residual para recuerdos desplazados)
 DECAIMIENTO_CASTIGO="1"
-UMBRAL_CASTIGO="0.58"
-CONCEPTO_CASTIGO="error incorrecto mal equivocado no es asi falla fallo falso corregir"
-CACHE_CASTIGO="$DIR_MEMORIA/castigo.json"
 
 # Decaimiento de la memoria
 DECAIMIENTO_PERSISTENTE="24*365"
