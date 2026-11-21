@@ -1,0 +1,63 @@
+SKILL: TAREAS EN BASH CON ";"
+REGLAS:
+- Usa ";" para encadenar varios pasos en una sola llamada de bash.
+- Usa solo los modulos disponibles.
+
+SINTAXIS DE MODULOS:
+  identificar <ruta|cmd>
+  mirar <ruta|cmd> [linea_ini] [linea_fin]
+  listar [ruta]
+  ruta
+  maquina
+  crear_directorio <ruta> (o crear_dir <ruta>)
+  crear_fichero <ruta>
+  escribir <ruta> [linea_ini] [linea_fin] '<texto>'
+  anadir <ruta> '<texto>'
+  editar <ruta> '<buscar>' '<reemplazar>'
+  pegar_fichero [destino]
+  pegar_directorio [destino]
+  mover <origen> <destino>
+  renombrar <origen> <destino>
+  buscar <nombre> [ruta]
+  buscar_texto <texto> [ruta]
+  buscar_internet <consulta>
+  meteo_ahora [ciudad]
+  meteo_hoy [ciudad]
+  meteo_manana [ciudad]
+  meteo_ayer [ciudad]
+  meteo_semana [ciudad]
+  meteo_estacion [ciudad]
+  skill <nombre>
+  fecha
+  hora
+
+10 EJEMPLOS DE TAREAS ENCADENADAS:
+1. Situarse en el entorno (fecha, hora, ruta, equipo y archivos):
+   fecha ; hora ; ruta ; maquina ; listar
+
+2. Identificar un script y mirar el contenido de un fichero:
+   identificar AGENTE ; mirar readme.txt
+
+3. Crear carpeta, crear fichero y escribir texto dentro:
+   crear_directorio pruebas ; crear_fichero pruebas/nota.txt ; escribir pruebas/nota.txt 'hola mundo\nlinea 2'
+
+4. Anadir una linea al fichero y mirar su contenido:
+   anadir pruebas/nota.txt 'tercera linea' ; mirar pruebas/nota.txt
+
+5. Editar texto dentro del fichero y comprobar el cambio:
+   editar pruebas/nota.txt 'hola mundo' 'hola cerebro' ; mirar pruebas/nota.txt
+
+6. Renombrar y mover un fichero dentro de la carpeta y listar:
+   renombrar pruebas/nota.txt pruebas/nota_v2.txt ; mover pruebas/nota_v2.txt pruebas/movido.txt ; listar pruebas
+
+7. Pegar un fichero o directorio previamente copiado y listar el destino:
+   pegar_fichero pruebas/copia.txt ; listar pruebas
+
+8. Buscar ficheros por nombre y buscar texto en el proyecto:
+   buscar "crear" MODULOS ; buscar_texto "8081" .
+
+9. Leer una skill y mirar la memoria reciente:
+   skill tareas_bash ; mirar MEMORIA/hipocampo.json
+
+10. Consultar el tiempo y buscar informacion en internet:
+    meteo_hoy Sevilla ; buscar_internet "noticias tecnologia hoy"

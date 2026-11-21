@@ -1,0 +1,11 @@
+#!/bin/bash
+# Modulo: mirar <ruta>
+
+
+CONTENIDO(){
+      if [ -d $@ ]; then ls $@
+    elif [ -f $@ ]; then cat $@
+    fi
+}
+
+mirar() { CONTENIDO "$@"; }

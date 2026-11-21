@@ -1,0 +1,12 @@
+#!/bin/bash
+# Modulo: renombrar <origen> <destino>
+
+renombrar() {
+    if [[ -e "$1" ]]; then
+        if mv "$1" "$2"; then echo "Renombrado: $1 -> $2"
+        else false; fi
+    else
+        echo "Error: no existe $1"
+        false
+    fi
+}

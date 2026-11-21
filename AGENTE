@@ -1,0 +1,383 @@
+#!/bin/bash
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)/CONFIG"
+
+# Argumentos recibidos:
+ENTRADA="$*"
+
+# Espera activa hasta que el servidor esté vivo y respondiendo (HTTP 200)
+while ! curl -sf "http://${HOST}:${PUERTO}/health" >/dev/null 2>&1; do sleep 0.5; done
+
+# Vectorizar consulta una sola vez (apoyandose en el Hipocampo si la frase actual es corta)
+VEC_CONSULTA="null"
+if [[ -n "$ENTRADA" ]]; then
+    TEXTO_CONSULTA="$ENTRADA"
+    if [[ -s "$HIPOCAMPO" ]]; then
+        if [[ ${#ENTRADA} -lt 25 ]]; then
+            ULTIMO_HIPO=$(jq -r -s '.[-1].messages[0].content // empty' "$HIPOCAMPO" 2>/dev/null)
+            if [[ -n "$ULTIMO_HIPO" ]]; then
+                TEXTO_CONSULTA="$ULTIMO_HIPO $ENTRADA"
+            fi
+        fi
+    fi
+    PAYLOAD_EMB=$(jq -a -n --arg txt "$TEXTO_CONSULTA" '{input: $txt}')
+    RESP_EMB=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAYLOAD_EMB")
+    if [[ -z "$RESP_EMB" ]]; then RESP_EMB="{}"; fi
+    VEC_CONSULTA=$(jq -c 'if .data then (.data[0].embedding | map((. * 10000 | round) / 10000)) else null end' < <(echo "$RESP_EMB"))
+    if [[ -z "$VEC_CONSULTA" ]]; then VEC_CONSULTA="null"; fi
+fi
+export VEC_CONSULTA
+
+# 1. Cargar Hipocampo real (el momento presente: ultimos $MAX_HIPOCAMPO turnos vivos)
+HIPOCAMPO_TURNOS="[ ]"
+if [[ -s "$HIPOCAMPO" ]]; then
+    HIPOCAMPO_TURNOS=$(jq -a -s --argjson maxh "$MAX_HIPOCAMPO" --argjson umb "$UMBRAL_SIM" '
+        [ .[ ] | select(.embedding == null or ((.embedding | map(. * .) | add | sqrt) >= $umb)) ][-$maxh:]
+    ' "$HIPOCAMPO" 2>/dev/null)
+    if [[ -z "$HIPOCAMPO_TURNOS" ]]; then HIPOCAMPO_TURNOS="[ ]"; fi
+fi
+
+# 2. Recordar y reforzar en Memoria Persistente y Memoria Episodica (ambas particionadas Top-2)
+RECUERDOS_TURNOS="[ ]"
+CANDIDATOS_RAW=""
+
+ascender_a_persistente() {
+    NUEVO_PER="$1"
+    if [[ ! -f "$INDICE_PERSISTENTE" ]]; then > "$INDICE_PERSISTENTE"; fi
+
+    PART_PER=$(jq -r -s --argjson umb "$UMBRAL_SIM" --argjson maxp "$MAX_PARTICION" '
+        (.[0:-1]) as $idx |
+        (.[-1]) as $nuevo |
+        if $nuevo.embedding != null then
+            (($nuevo.embedding | map(. * .) | add | sqrt) + 0.000001) as $nq |
+            (
+                [
+                    $idx[ ] |
+                    select(.lineas < $maxp and .embedding != null) |
+                    ((.embedding | map(. * .) | add | sqrt) + 0.000001) as $ne |
+                    . + {sim: (([.embedding, $nuevo.embedding] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($ne * $nq))} |
+                    select(.sim >= $umb)
+                ] | sort_by(-.sim) | .[0].archivo // empty
+            )
+        else
+            ($idx | map(select(.ultimo == 1 and .lineas < $maxp)) | .[0].archivo // empty)
+        end
+    ' < <(cat "$INDICE_PERSISTENTE"; echo "$NUEVO_PER"))
+
+    if [[ -n "$PART_PER" ]]; then
+        if [[ -s "$DIR_MEMORIA/$PART_PER" ]]; then
+            PER_ACT=$(jq -a -c -s --argjson uref "$UMBRAL_REFUERZO" '
+                (.[0:-1]) as $items |
+                (.[-1]) as $nuevo |
+                (($nuevo.embedding | map(. * .) | add | sqrt) + 0.000001) as $nq |
+                ([
+                    $items[ ] |
+                    if .embedding != null then
+                        ((.embedding | map(. * .) | add | sqrt) + 0.000001) as $ne |
+                        . + {_sim: (([.embedding, $nuevo.embedding] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($ne * $nq))}
+                    else
+                        . + {_sim: 0}
+                    end
+                ]) as $marcados |
+                ([ $marcados[ ] | select(._sim < $uref) | del(._sim) ] + [$nuevo])[ ]
+            ' < <(cat "$DIR_MEMORIA/$PART_PER"; echo "$NUEVO_PER") 2>/dev/null)
+            if [[ -n "$PER_ACT" ]]; then
+                echo "$PER_ACT" > "$DIR_MEMORIA/${PART_PER}.$$.tmp"
+                mv -f "$DIR_MEMORIA/${PART_PER}.$$.tmp" "$DIR_MEMORIA/$PART_PER" 2>/dev/null
+            fi
+        else
+            echo "$NUEVO_PER" > "$DIR_MEMORIA/$PART_PER"
+        fi
+    else
+        N_PER=1
+        while [[ -f "$DIR_MEMORIA/${PREFIJO_PERSISTENTE}_${N_PER}.json" ]]; do
+            N_PER=$((N_PER + 1))
+        done
+        PART_PER="${PREFIJO_PERSISTENTE}_${N_PER}.json"
+        echo "$NUEVO_PER" > "$DIR_MEMORIA/$PART_PER"
+    fi
+
+    LINEAS_PER=$(jq -r -s 'length' "$DIR_MEMORIA/$PART_PER")
+    IND_PER_NUEVO=$(jq -a -c -s --arg arch "$PART_PER" --argjson lreal "$LINEAS_PER" '
+        (.[0:-1]) as $idx |
+        (.[-1]) as $nuevo |
+        (
+            if $nuevo.embedding != null then
+                (($nuevo.embedding | map(. * .) | add | sqrt) + 0.000001) as $nq |
+                ($nuevo.embedding | map((. / $nq * 10000 | round) / 10000))
+            else
+                null
+            end
+        ) as $v_unit |
+        if ([ $idx[ ] | select(.archivo == $arch) ] | length) > 0 then
+            [
+                $idx[ ] |
+                if .archivo == $arch then
+                    .lineas as $n |
+                    . + {
+                        lineas: $lreal,
+                        ultimo: 1,
+                        embedding: (
+                            if ($v_unit != null and .embedding != null) then
+                                ([.embedding[:1024], $v_unit[:1024]] | transpose | map((((.[0] // 0) * $n) + (.[1] // 0)) / ($n + 1))) as $raw_c |
+                                (($raw_c | map(. * .) | add | sqrt) + 0.000001) as $nc |
+                                ($raw_c | map((. / $nc * 10000 | round) / 10000))
+                            else
+                                (.embedding // $v_unit)
+                            end
+                        )
+                    }
+                else
+                    . + {ultimo: 0}
+                end
+            ][ ]
+        else
+            (
+                [ $idx[ ] | . + {ultimo: 0} ] +
+                [{archivo: $arch, lineas: $lreal, ultimo: 1, embedding: $v_unit}]
+            )[ ]
+        end
+    ' < <(cat "$INDICE_PERSISTENTE"; echo "$NUEVO_PER"))
+    if [[ -n "$IND_PER_NUEVO" ]]; then
+        echo "$IND_PER_NUEVO" > "${INDICE_PERSISTENTE}.$$.tmp"
+        mv -f "${INDICE_PERSISTENTE}.$$.tmp" "$INDICE_PERSISTENTE" 2>/dev/null
+    fi
+}
+
+buscar_y_reforzar_capa() {
+    CAPA_IND="$1"
+    PUEDE_ASCENDER="$2"
+
+    if [[ -s "$CAPA_IND" ]]; then
+        PARTICIONES_BUSCAR=$(jq -r -s --arg ent "$ENTRADA" --argjson q "${VEC_CONSULTA:-null}" --argjson umb "$UMBRAL_SIM" '
+            if $q == null then
+                (.[ ] | select(.ultimo == 1) | .archivo) // empty
+            else
+                (
+                    [
+                        .[ ] |
+                        select(.embedding != null) |
+                        ((.embedding | map(. * .) | add | sqrt) + 0.000001) as $ne |
+                        . + {sim: (([.embedding, $q] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / $ne)} |
+                        select(.sim >= $umb)
+                    ] | sort_by(-.sim)[:2][ ].archivo
+                ) // empty
+            end
+        ' "$CAPA_IND" 2>/dev/null)
+
+        if [[ -n "$PARTICIONES_BUSCAR" ]]; then
+            while IFS= read -r part; do
+                if [[ -n "$part" ]]; then
+                    if [[ -s "$DIR_MEMORIA/$part" ]]; then
+                        CANDIDATOS_RAW+=$(cat "$DIR_MEMORIA/$part")$'\n'
+                        if [[ "$VEC_CONSULTA" != "null" ]]; then
+                            PART_REFORZADA=$(jq -a -c -s --argjson q "$VEC_CONSULTA" --argjson umb "$UMBRAL_SIM" --argjson fref "$FACTOR_REFUERZO" '
+                                [
+                                    to_entries[ ] |
+                                    if .value.embedding != null then
+                                        . + {_sim: ([.value.embedding, $q] | transpose | map((.[0] // 0) * (.[1] // 0)) | add)}
+                                    else
+                                        . + {_sim: 0}
+                                    end
+                                ] as $todos |
+                                ([ $todos[ ] | select(._sim >= $umb) ] | sort_by(-._sim) | .[0].key // -1) as $ganador |
+                                [
+                                    $todos[ ] |
+                                    if (.key == $ganador and $ganador >= 0) then
+                                        (.value.embedding[:1024] | map(. * $fref)) as $v_ref |
+                                        (($v_ref | map(. * .) | add | sqrt) + 0.000001) as $n_ref |
+                                        .value + {
+                                            embedding: (
+                                                if $n_ref > 1.0 then
+                                                    ($v_ref | map((. / $n_ref * 10000 | round) / 10000))
+                                                else
+                                                    ($v_ref | map((. * 10000 | round) / 10000))
+                                                end
+                                            )
+                                        }
+                                    else
+                                        .value
+                                    end
+                                ][ ]
+                            ' "$DIR_MEMORIA/$part" 2>/dev/null)
+                            if [[ -n "$PART_REFORZADA" ]]; then
+                                echo "$PART_REFORZADA" > "$DIR_MEMORIA/${part}.$$.tmp"
+                                mv -f "$DIR_MEMORIA/${part}.$$.tmp" "$DIR_MEMORIA/$part" 2>/dev/null
+                                if [[ "$PUEDE_ASCENDER" == "1" ]]; then
+                                    ASCENSO_PER=$(jq -a -c --argjson uper "$UMBRAL_PERSISTENTE" '
+                                        select(.embedding != null and ((.embedding | map(. * .) | add | sqrt) >= $uper))
+                                    ' "$DIR_MEMORIA/$part" 2>/dev/null)
+                                    if [[ -n "$ASCENSO_PER" ]]; then
+                                        while IFS= read -r lin_per; do
+                                            if [[ -n "$lin_per" ]]; then
+                                                ascender_a_persistente "$lin_per"
+                                            fi
+                                        done < <(printf '%s\n' "$ASCENSO_PER")
+                                    fi
+                                fi
+                            fi
+                        fi
+                    fi
+                fi
+            done < <(printf '%s\n' "$PARTICIONES_BUSCAR")
+        fi
+    fi
+}
+
+buscar_y_reforzar_capa "$INDICE_PERSISTENTE" "0"
+buscar_y_reforzar_capa "$INDICE_EPISODICA" "1"
+
+if [[ -n "$CANDIDATOS_RAW" ]]; then
+    RECUERDOS_TURNOS=$(jq -a -s --argjson q "${VEC_CONSULTA:-null}" --argjson umb "$UMBRAL_SIM" --argjson maxm "$MAX_MEMORIA" --argjson maxh "$MAX_MEM_HERRAMIENTA" '
+        unique_by(.messages[0].content) |
+        if $q == null then
+            .[-$maxm:]
+        else
+            [
+                to_entries[ ] |
+                select(.value.embedding != null) |
+                . + {sim: ([.value.embedding, $q] | transpose | map((.[0] // 0) * (.[1] // 0)) | add)} |
+                select(.sim >= $umb)
+            ] |
+            sort_by(-.sim) |
+            (
+                ([ .[ ] | select((.value.messages[1].content // "") | startswith("[")) ][: $maxh]) +
+                ([ .[ ] | select(((.value.messages[1].content // "") | startswith("[")) | not) ][: $maxm])
+            ) |
+            sort_by(-.sim)[:$maxm] |
+            sort_by(.key) |
+            map(.value)
+        end
+    ' < <(printf '%s' "$CANDIDATOS_RAW") 2>/dev/null)
+    if [[ -z "$RECUERDOS_TURNOS" ]]; then RECUERDOS_TURNOS="[ ]"; fi
+fi
+
+# 3. Unir Recuerdos a largo plazo + Hipocampo del momento presente (sin duplicar turnos y mostrando fecha)
+MEMORIA_JSON=$(jq -a -s '
+    (.[0] // [ ]) as $rec |
+    (.[1] // [ ]) as $hip |
+    ([ $hip[ ].messages[0].content ]) as $u_hip |
+    (
+        ([ $rec[ ] | select(.messages[0].content as $u | ($u_hip | index($u)) == null) ]) +
+        $hip
+    ) |
+    map(
+        if (.fecha != null and .fecha != "") then
+            [
+                (.messages[0] | .content = "[\(.fecha // "")] " + .content),
+                .messages[1]
+            ]
+        else
+            .messages
+        end
+    ) | add // [ ]
+' < <(echo "$RECUERDOS_TURNOS"; echo "$HIPOCAMPO_TURNOS") 2>/dev/null)
+if [[ -z "$MEMORIA_JSON" ]]; then MEMORIA_JSON="[ ]"; fi
+
+# Cargar herramientas reales del directorio y empaquetar JSON con jq
+SPECS=""
+if [[ -d "$DIR_HERRAMIENTAS" ]]; then
+    for ruta in "$DIR_HERRAMIENTAS"/*; do
+        if [[ -f "$ruta" ]]; then
+            SPECS+=$("$ruta" --spec "$ENTRADA" 2>/dev/null)
+        fi
+    done
+fi
+TOOLS_JSON=$(jq -s '.' < <(echo "$SPECS"))
+
+INSTRUCCIONES_BASE='
+- Responde en Español de forma concisa de tu a tu y con emojis, sin formato latex.
+
+- Solo entorno bash "#!/bin/bash".
+- Sigue y usa el estilo del codigo y proyecto.
+- La obtencion de datos dinamicos y relativos (no datos fijos, ni etiquetas), se obtiene por peticion/ejecucion.
+- No usar en el codigo "EOF", "return", "false", "local", "declare", "&", "&&", "|", "||", "<<<", ">>>" y unicorchetes solos"[]".
+'
+
+INSTRUCCION_AGENTE="\
+$INSTRUCCIONES_BASE
+- Dispones de memoria persistente.
+
+- Usa la herramienta bash y sus modulos cuando sea necesario.
+- Dispones de Skills para saber como usar las herramientas y sus modulos.
+- Dispones de acceso al sistema operativo.
+- Dispones de acceso al terminal de Linux.
+"
+
+MENSAJES_TURNO=$(jq -a -n --arg ent "$ENTRADA" '[{"role": "user", "content": $ent}]')
+ETIQUETAS_TOOLS=""
+TEXTO_FINAL=""
+RESPONDI=0
+
+# Intentos de obtener respuesta
+for (( PASO=1; PASO<=MAX_REINTENTOS; PASO++ )); do
+    JSON_PAYLOAD=$(jq -a --arg sys "$INSTRUCCION_AGENTE" --argjson turno "$MENSAJES_TURNO" --argjson tls "$TOOLS_JSON" --argjson temp "$TEMPERATURA" '{
+        messages: (
+            [{"role": "system", "content": $sys}] +
+            . +
+            $turno
+        ),
+        tools: $tls,
+        tool_choice: "auto",
+        temperature: $temp
+    }' < <(echo "$MEMORIA_JSON"))
+
+    # Petición a llama-server
+    RESPUESTA=$(curl -s "$URL" -H "Content-Type: application/json" -d "$JSON_PAYLOAD")
+    if [[ -z "$RESPUESTA" ]]; then RESPUESTA="{}"; fi
+
+    # Extraer nombre de la herramienta llamada y sus argumentos
+    TOOL_NAME=$(jq -n -r --argjson r "$RESPUESTA" '$r.choices[0].message.tool_calls[0].function.name // empty')
+    TOOL_ARGS=$(jq -n -r --argjson r "$RESPUESTA" '$r.choices[0].message.tool_calls[0].function.arguments // empty')
+    MODULO_USADO=$(jq -n -r --argjson a "$TOOL_ARGS" '$a.comando // empty' 2>/dev/null)
+
+    if [[ -n "$TOOL_NAME" ]]; then
+        if [[ -x "$DIR_HERRAMIENTAS/$TOOL_NAME" ]]; then
+            SALIDA_HERRAMIENTA=$(timeout "$TIMEOUT_HERRAMIENTA" "$DIR_HERRAMIENTAS/$TOOL_NAME" "$TOOL_ARGS" 2>&1)
+        else
+            SALIDA_HERRAMIENTA="Error: herramienta no disponible ($TOOL_NAME)"
+        fi
+        if [[ -z "$SALIDA_HERRAMIENTA" ]]; then SALIDA_HERRAMIENTA="(sin salida)"; fi
+
+        ETIQUETAS_TOOLS+="[$TOOL_NAME:$MODULO_USADO]"$'\n'
+        TOOL_ID=$(jq -n -r --argjson r "$RESPUESTA" --arg p "$PASO" '$r.choices[0].message.tool_calls[0].id // ("call_" + $p)')
+        MSG_LLAMADA=$(jq -n -c --argjson r "$RESPUESTA" '$r.choices[0].message')
+
+        MENSAJES_TURNO=$(jq -a -c --argjson mcall "$MSG_LLAMADA" --arg tid "$TOOL_ID" --arg tname "$TOOL_NAME" --arg tout "$SALIDA_HERRAMIENTA" '
+            . + [
+                $mcall,
+                {"role": "tool", "tool_call_id": $tid, "name": $tname, "content": $tout}
+            ]
+        ' < <(echo "$MENSAJES_TURNO"))
+    else
+        TEXTO_FINAL=$(jq -n -r --argjson r "$RESPUESTA" '$r.choices[0].message.content // ""')
+        RESPONDI=1
+        break
+    fi
+done
+
+# Si agoto los reintentos llamando herramientas, forzar respuesta final con todo lo obtenido
+if [[ $RESPONDI -eq 0 ]]; then
+    INSTRUCCION_HERRAMIENTAS="\
+$INSTRUCCIONES_BASE
+- Usa tus recuerdos y los datos devueltos por las herramientas para responder con precision.
+"
+    PAYLOAD_FINAL=$(jq -a --arg sys "$INSTRUCCION_HERRAMIENTAS" --argjson turno "$MENSAJES_TURNO" --argjson temp "$TEMPERATURA" '{
+        messages: (
+            [{"role": "system", "content": $sys}] +
+            . +
+            $turno
+        ),
+        temperature: $temp
+    }' < <(echo "$MEMORIA_JSON"))
+
+    RESPUESTA_FINAL=$(curl -s "$URL" -H "Content-Type: application/json" -d "$PAYLOAD_FINAL")
+    if [[ -z "$RESPUESTA_FINAL" ]]; then RESPUESTA_FINAL="{}"; fi
+    TEXTO_FINAL=$(jq -n -r --argjson r "$RESPUESTA_FINAL" '$r.choices[0].message.content // ""')
+fi
+
+if [[ -n "$ETIQUETAS_TOOLS" ]]; then
+    printf '%s%s\n' "$ETIQUETAS_TOOLS" "$TEXTO_FINAL"
+else
+    echo "$TEXTO_FINAL"
+fi

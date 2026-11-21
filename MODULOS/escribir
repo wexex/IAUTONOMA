@@ -1,0 +1,58 @@
+#!/bin/bash
+# Modulo: escribir <ruta> [linea_ini] [linea_fin] '<texto>' y anadir <ruta> '<texto>' (usar comillas simples '')
+
+escribir() {
+    local ruta="$1"
+    shift
+    if [[ -n "$ruta" ]]; then
+        mkdir -p "$(dirname "$ruta")"
+        if [[ $# -ge 2 ]]; then
+            if [[ "$1" =~ ^[0-9]+$ ]]; then
+                if [[ -f "$ruta" ]]; then
+                    local ini="$1"
+                    local fin="$1"
+                    shift
+                    if [[ $# -ge 2 ]]; then
+                        if [[ "$1" =~ ^[0-9]+$ ]]; then
+                            fin="$1"
+                            shift
+                        fi
+                    fi
+                    : > "$ruta.tmp"
+                    if [[ "$ini" -gt 1 ]]; then
+                        head -n "$((ini - 1))" "$ruta" >> "$ruta.tmp"
+                    fi
+                    printf "%b\n" "$*" >> "$ruta.tmp"
+                    tail -n "+$((fin + 1))" "$ruta" >> "$ruta.tmp"
+                    mv "$ruta.tmp" "$ruta"
+                    echo "Escrito ($ini-$fin): $ruta"
+                else
+                    echo "Error: no existe $ruta"
+                    false
+                fi
+            else
+                printf "%b\n" "$*" > "$ruta"
+                echo "Escrito: $ruta"
+            fi
+        else
+            printf "%b\n" "$*" > "$ruta"
+            echo "Escrito: $ruta"
+        fi
+    else
+        echo "Error: falta ruta"
+        false
+    fi
+}
+
+anadir() {
+    local ruta="$1"
+    shift
+    if [[ -n "$ruta" ]]; then
+        mkdir -p "$(dirname "$ruta")"
+        printf "%b\n" "$*" >> "$ruta"
+        echo "Anadido: $ruta"
+    else
+        echo "Error: falta ruta"
+        false
+    fi
+}

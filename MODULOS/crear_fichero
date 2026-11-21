@@ -1,0 +1,11 @@
+#!/bin/bash
+# Modulo: crear_fichero <ruta>
+
+crear_fichero() {
+    if [[ -n "$1" ]]; then
+        if touch "$1"; then echo "Fichero: $1"; else false; fi
+    else
+        echo "Error: falta ruta"
+        false
+    fi
+}

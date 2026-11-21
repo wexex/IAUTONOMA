@@ -1,0 +1,33 @@
+#!/bin/bash
+# Modulo: identificar <ruta|comando>
+
+identificar() {
+    tipo() {
+        vacio() {
+            # Verifica si el archivo o carpeta esta vacio, incluso si no guarda datos
+            if [[ -f "$1" ]]; then
+                if [[ ! -s "$1" ]]; then echo "$1 esta vacio"; else echo "$1 no esta vacio"; fi
+            elif [[ -d "$1" ]]; then
+                if [[ -z "$(ls -A "$1" 2>/dev/null)" ]]; then echo "$1 esta vacio"; else echo "$1 no esta vacio"; fi
+            else
+                echo "$1 no guarda datos"
+            fi
+        }
+
+        # Identifica el tipo de archivo
+          if [[ -f "$1" ]]; then echo "$1 es un fichero"; vacio "$1"
+        elif [[ -d "$1" ]]; then echo "$1 es una carpeta"; vacio "$1"
+        elif [[ -S "$1" ]]; then echo "$1 es un socket"; vacio "$1"
+        elif [[ -p "$1" ]]; then echo "$1 es un pipe"; vacio "$1"
+        elif [[ -b "$1" ]]; then echo "$1 es un dispositivo de bloques"; vacio "$1"
+        elif [[ -c "$1" ]]; then echo "$1 es un dispositivo de caracteres"; vacio "$1"
+        else echo "$1 es desconocido"; vacio "$1"; fi
+    }
+
+    if [[ -L "$1" ]]; then
+        if [[ -e "$1" ]]; then echo "enlace simbolico: $(tipo "$1")"; else echo "$1 es un enlace simbolico roto"; false; fi
+    elif [[ -e "$1" ]]; then tipo "$1"
+    elif command -v "$1" >/dev/null 2>&1; then echo "$1 es un comando ($(type -t "$1"))"
+    else echo "$1 no existe"; false
+    fi
+}

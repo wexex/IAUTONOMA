@@ -1,0 +1,49 @@
+#!/bin/bash
+# Modulo: maquina
+
+maquina() {
+    echo "Usuario: $(whoami)"
+    echo "Equipo: $(hostname)"
+    echo "Sistema: $(uname -srm)"
+
+    if [[ -f /proc/cpuinfo ]]; then
+        local cpu_mod=""
+        local nucleos=0
+        while IFS=: read -r k v; do
+            if [[ "$k" == model\ name* ]]; then
+                if [[ -z "$cpu_mod" ]]; then
+                    cpu_mod="${v# }"
+                fi
+            elif [[ "$k" == processor* ]]; then
+                nucleos=$((nucleos + 1))
+            fi
+        done < /proc/cpuinfo
+        echo "CPU: $cpu_mod ($nucleos nucleos)"
+    fi
+
+    if [[ -f /proc/meminfo ]]; then
+        local mem_tot=0
+        local mem_free=0
+        local mem_avail=0
+        while read -r k val _; do
+            if [[ "$k" == "MemTotal:" ]]; then
+                mem_tot=$((val / 1024))
+            elif [[ "$k" == "MemFree:" ]]; then
+                mem_free=$((val / 1024))
+            elif [[ "$k" == "MemAvailable:" ]]; then
+                mem_avail=$((val / 1024))
+            fi
+        done < /proc/meminfo
+        if [[ $mem_avail -gt 0 ]]; then
+            mem_free=$mem_avail
+        fi
+        local mem_usada=$((mem_tot - mem_free))
+        echo "RAM: ${mem_usada} MB usados / ${mem_tot} MB total (${mem_free} MB libres)"
+    fi
+
+    if type -P nvidia-smi >/dev/null 2>/dev/null; then
+        echo "GPU: $(nvidia-smi --query-gpu=name,memory.used,memory.total,memory.free --format=csv,noheader)"
+    else
+        echo "GPU: No detectada"
+    fi
+}

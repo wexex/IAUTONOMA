@@ -1,0 +1,65 @@
+#!/bin/bash
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/CONFIG"
+
+echo "$$" > "$PID_ABURRIMIENTO"
+SEG_DESPIERTO=$(( ${TIEMPO_DESPIERTO} ))
+SEG_MITAD=$(( SEG_DESPIERTO / 2 ))
+ULTIMA_VISTA=""
+FASE=0
+
+dormir_puerto() {
+    P_OBJ="$1"
+    if command -v taskkill >/dev/null 2>/dev/null; then
+        while IFS= read -r win_pid; do
+            if [[ -n "$win_pid" ]]; then
+                if [[ "$win_pid" != "0" ]]; then
+                    taskkill //F //T //PID "$win_pid" >/dev/null 2>/dev/null
+                fi
+            fi
+        done < <(awk -v p=":$P_OBJ" '$4 == "LISTENING" { if (substr($2, length($2) - length(p) + 1) == p) print $5 }' < <(netstat -ano 2>/dev/null))
+    elif command -v fuser >/dev/null 2>/dev/null; then
+        fuser -k "${P_OBJ}/tcp" >/dev/null 2>/dev/null
+    fi
+}
+
+while true; do
+    ULTIMA=0
+    if [[ -s "$ULTIMA_INTERACCION" ]]; then
+        ULTIMA=$(cat "$ULTIMA_INTERACCION" 2>/dev/null)
+    fi
+    if [[ -z "$ULTIMA" ]]; then ULTIMA=0; fi
+
+    if [[ "$ULTIMA" != "$ULTIMA_VISTA" ]]; then
+        ULTIMA_VISTA="$ULTIMA"
+        FASE=0
+    fi
+
+    AHORA=$(date +%s)
+    TRANSCURRIDO=$((AHORA - ULTIMA))
+
+    if [[ $FASE -eq 0 ]]; then
+        if [[ $TRANSCURRIDO -ge $SEG_MITAD ]]; then
+            if [[ $TRANSCURRIDO -lt $SEG_DESPIERTO ]]; then
+                "$DIR/ENTRADA" --interno "$ESTIMULO_SILENCIO" >/dev/null 2>/dev/null
+                FASE=1
+            fi
+        fi
+    fi
+
+    if [[ $TRANSCURRIDO -ge $SEG_DESPIERTO ]]; then
+        "$DIR/ENTRADA" --interno "$ESTIMULO_DORMIR" >/dev/null 2>/dev/null
+        ULTIMA_POST=0
+        if [[ -s "$ULTIMA_INTERACCION" ]]; then
+            ULTIMA_POST=$(cat "$ULTIMA_INTERACCION" 2>/dev/null)
+        fi
+        if [[ "$ULTIMA_POST" == "$ULTIMA_VISTA" ]]; then
+            dormir_puerto "$PUERTO"
+            dormir_puerto "$PUERTO_MEMORIA"
+            rm -f "$PID_ABURRIMIENTO"
+            exit 0
+        fi
+    fi
+
+    sleep 5
+done

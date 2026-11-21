@@ -1,0 +1,21 @@
+#!/bin/bash
+# Modulo: pegar_directorio [destino]
+
+pegar_directorio() {
+    local clip="/tmp/.cerebro2_clip_directorio"
+    local dest="${1:-.}"
+    if [[ ! -f "$clip" ]]; then
+        echo "Error: no hay ningun directorio copiado en el portapapeles"
+        false
+    else
+        local orig
+        orig=$(<"$clip")
+        if [[ -d "$orig" ]]; then
+            if cp -r "$orig" "$dest"; then echo "Directorio pegado: $orig -> $dest"
+            else false; fi
+        else
+            echo "Error: ya no existe el directorio copiado ($orig)"
+            false
+        fi
+    fi
+}

@@ -1,0 +1,40 @@
+#!/bin/bash
+
+
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)/CONFIG"
+
+
+# Cargar el historial
+if [[ -f "$HISTORIAL" ]]; then
+    while IFS= read -r linea; do
+        if [[ "$linea" == *"$SEP_USUARIO"* ]]; then
+            cmd="${linea#*"$SEP_USUARIO"}"
+            history -s "${cmd%%"$SEP_IA"*}"
+        fi
+    done < <(tail -n "$MAX_HIPOCAMPO" "$HISTORIAL")
+fi
+
+while true; do
+    
+    # Leer entrada
+    read -erp "$NOMBRE_USUARIO: " ENTRADA
+
+    # Si no hay entrada, salir
+    if [[ ! -z "$ENTRADA" ]]; then 
+        # Salir
+        if [[ "${ENTRADA,,}" == "q" ]]; then break; fi
+
+        # Enviar entrada
+        history -s "$ENTRADA"
+
+        # Mostrar
+        echo -n "$NOMBRE_IA: "
+
+        # Ejecutar
+        "$DIR/ENTRADA" "$ENTRADA"
+    fi
+
+done
+
+

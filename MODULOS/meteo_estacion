@@ -1,0 +1,22 @@
+#!/bin/bash
+# Modulo: meteo_estacion - Datos en tiempo real de estacion meteorologica local
+
+meteo_estacion() {
+LINE=$(curl -s --max-time 5 "https://www.meteoviso.es/realtime.txt")
+if [[ -z "$LINE" ]]; then
+    echo "Error al conectar con Meteoviso"
+    exit 1
+fi
+
+read -r f_fecha f_hora f_temp f_hum f_rocio f_viento f_racha f_rumbo f_rainrate f_rain_hoy f_baro f_dir f_beaufort f_unit_w f_unit_t f_unit_p f_unit_r f_windrun f_trend_p f_rain_m f_rain_y f_rain_ayer f_in_t f_in_h f_chill f_trend_t f_tmax f_htmax f_tmin f_htmin f_wmax f_hwmax f_gmax f_hgmax f_pmax f_hpmax f_pmin f_hpmin f_ver f_build f_g10 f_heat f_app f_sol f_uv rest <<< "$LINE"
+
+echo "Estación El Viso del Alcor (Sainlogic WS3500 + CumulusMX)"
+echo "Registro: $f_fecha $f_hora"
+echo "C Temperatura: ${f_temp}°C (Sensación: ${f_app}°C | Tendencia: ${f_trend_t}°C/h)"
+echo "Mín / Máx hoy: Mín ${f_tmin}°C (${f_htmin}) | Máx ${f_tmax}°C (${f_htmax})"
+echo "Hum: Humedad: ${f_hum}% (Punto de rocío: ${f_rocio}°C)"
+echo "Viento:Viento: ${f_viento} ${f_unit_w} (${f_dir}) | Racha actual: ${f_racha} ${f_unit_w} | Racha máx hoy: ${f_gmax} ${f_unit_w} (${f_hgmax})"
+echo "Lluvia: Lluvia: Hoy ${f_rain_hoy} ${f_unit_r} | Ayer ${f_rain_ayer} ${f_unit_r} | Mes ${f_rain_m} ${f_rain_r} | Año ${f_rain_y} ${f_unit_r}"
+echo "Presión: ${f_baro} ${f_unit_p} (Tendencia: ${f_trend_p})"
+echo "Radiación: ${f_sol} W/m² | UV: ${f_uv}"
+}

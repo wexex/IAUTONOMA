@@ -1,0 +1,12 @@
+#!/bin/bash
+# Modulo: mover <origen> <destino>
+
+mover() {
+    if [[ -e "$1" ]]; then
+        if mv "$1" "$2"; then echo "Movido: $1 -> $2"
+        else false; fi
+    else
+        echo "Error: no existe $1"
+        false
+    fi
+}

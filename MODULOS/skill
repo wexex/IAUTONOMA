@@ -1,0 +1,18 @@
+#!/bin/bash
+# Modulo: skill [nombre] (sin nombre lista las skills disponibles)
+
+skill() {
+    base="$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/SKILLS"
+    if [[ -z "$1" ]]; then
+        ls -1 "$base"
+    else
+        encontrado=0
+        for ext in "" ".txt" ".md"; do
+            if [[ -f "$base/$1$ext" ]]; then cat "$base/$1$ext"; encontrado=1; break; fi
+        done
+        if [[ $encontrado -eq 0 ]]; then
+            echo "Error: skill no encontrada ($1). Disponibles:"
+            ls -1 "$base"
+        fi
+    fi
+}

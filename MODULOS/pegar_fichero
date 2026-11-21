@@ -1,0 +1,21 @@
+#!/bin/bash
+# Modulo: pegar_fichero [destino]
+
+pegar_fichero() {
+    local clip="/tmp/.cerebro2_clip_fichero"
+    local dest="${1:-.}"
+    if [[ ! -f "$clip" ]]; then
+        echo "Error: no hay ningun fichero copiado en el portapapeles"
+        false
+    else
+        local orig
+        orig=$(<"$clip")
+        if [[ -f "$orig" ]]; then
+            if cp "$orig" "$dest"; then echo "Fichero pegado: $orig -> $dest"
+            else false; fi
+        else
+            echo "Error: ya no existe el fichero copiado ($orig)"
+            false
+        fi
+    fi
+}

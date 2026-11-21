@@ -1,0 +1,4 @@
+#!/bin/bash
+# Modulo: ruta
+
+ruta() { echo "La ruta es: $PWD"; }

@@ -1,0 +1,16 @@
+#!/bin/bash
+# Modulo: copiar_fichero <origen>
+
+copiar_fichero() {
+    clip="/tmp/.cerebro2_clip_fichero"
+    orig="$1"
+    if [[ -z "$orig" ]]; then
+        echo "Error: falta la ruta del fichero a copiar"
+    elif [[ -f "$orig" ]]; then
+        ruta_abs="$(cd "$(dirname "$orig")"; pwd)/$(basename "$orig")"
+        printf '%s\n' "$ruta_abs" > "$clip"
+        echo "Fichero copiado: $ruta_abs"
+    else
+        echo "Error: no existe el fichero ($orig)"
+    fi
+}

@@ -1,0 +1,211 @@
+#!/bin/bash
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/CONFIG"
+
+if [[ "$1" == "--spec" ]]; then
+    ENTRADA_SPEC="$2"
+    MODS_RAW=$(grep -rhi "^# Modulo:" "$DIR_MODULOS" 2>/dev/null)
+    MODS_RAW="${MODS_RAW//$'\r'/}"
+    TOTAL_MODS=$(jq -R -s 'split("\n") | map(select(length > 0)) | length' < <(printf '%s\n' "$MODS_RAW"))
+    MODULOS_ELEGIDOS="$MODS_RAW"
+
+    if [[ "$TOTAL_MODS" -gt "$MAX_MODULOS" ]]; then
+        HUELLA=$(cksum < <(printf '%s\n' "$MODS_RAW"))
+        REINDEXAR=0
+        if [[ ! -s "$INDICE_MODULOS" ]]; then REINDEXAR=1; fi
+        if [[ ! -s "$DIR_MEM_MODULOS/huella" ]]; then REINDEXAR=1; fi
+        if [[ $REINDEXAR -eq 0 ]]; then
+            HUELLA_OLD=$(cat "$DIR_MEM_MODULOS/huella")
+            if [[ "$HUELLA_OLD" != "$HUELLA" ]]; then REINDEXAR=1; fi
+        fi
+
+        if [[ $REINDEXAR -eq 1 ]]; then
+            if curl -sf "http://${HOST}:${PUERTO_MEMORIA}/health" >/dev/null 2>&1; then
+                mkdir -p "$DIR_MEM_MODULOS"
+                CACHE_FILE="$DIR_MEM_MODULOS/cache.tmp.json"
+                RAW_CACHE="$DIR_MEM_MODULOS/raw_cache.tmp.json"
+                > "$RAW_CACHE"
+                for pf in "$DIR_MEM_MODULOS"/modulos_*.json; do
+                    if [[ -s "$pf" ]]; then
+                        cat "$pf" >> "$RAW_CACHE"
+                    fi
+                done
+                if [[ -s "$RAW_CACHE" ]]; then
+                    jq -a -s 'map(select(.embedding != null) | {(.modulo): .embedding}) | add // {}' "$RAW_CACHE" > "$CACHE_FILE" 2>/dev/null
+                fi
+                if [[ ! -s "$CACHE_FILE" ]]; then echo "{}" > "$CACHE_FILE"; fi
+                rm -f "$RAW_CACHE"
+
+                LISTA_NUEVOS="$DIR_MEM_MODULOS/nuevos.tmp.txt"
+                jq -s -r '
+                    .[0] as $c |
+                    (.[1] | split("\n") | map(select(length > 0))) |
+                    .[ ] | select($c[.] == null)
+                ' < <(cat "$CACHE_FILE"; jq -a -R -s '.' < <(printf '%s\n' "$MODS_RAW")) > "$LISTA_NUEVOS"
+
+                LOTE_FILE="$DIR_MEM_MODULOS/lote.tmp.txt"
+                > "$LOTE_FILE"
+                CUENTA_LOTE=0
+                while IFS= read -r linea_mod; do
+                    if [[ -n "$linea_mod" ]]; then
+                        printf '%s\n' "$linea_mod" >> "$LOTE_FILE"
+                        CUENTA_LOTE=$((CUENTA_LOTE + 1))
+                        if [[ $CUENTA_LOTE -ge 50 ]]; then
+                            REQ_LOTE=$(jq -a -R -s -c 'split("\n") | map(select(length > 0)) | {raw: ., input: map(sub("^# [Mm]odulo: *"; "") | gsub("_"; " "))}' "$LOTE_FILE")
+                            INP_LOTE=$(jq -a -c '{input: .input}' < <(echo "$REQ_LOTE"))
+                            RESP_LOTE=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$INP_LOTE")
+                            if [[ -n "$RESP_LOTE" ]]; then
+                                jq -a -s '
+                                    .[0] as $c | .[1].raw as $r | .[2].data as $d |
+                                    if $d then ($c + ([range(0; $r | length) | {($r[.]): ($d[.].embedding | map((. * 10000 | round) / 10000))}] | add // {})) else $c end
+                                ' < <(cat "$CACHE_FILE"; echo "$REQ_LOTE"; echo "$RESP_LOTE") > "${CACHE_FILE}.new"
+                                mv "${CACHE_FILE}.new" "$CACHE_FILE"
+                            fi
+                            > "$LOTE_FILE"
+                            CUENTA_LOTE=0
+                        fi
+                    fi
+                done < "$LISTA_NUEVOS"
+
+                if [[ $CUENTA_LOTE -gt 0 ]]; then
+                    REQ_LOTE=$(jq -a -R -s -c 'split("\n") | map(select(length > 0)) | {raw: ., input: map(sub("^# [Mm]odulo: *"; "") | gsub("_"; " "))}' "$LOTE_FILE")
+                    INP_LOTE=$(jq -a -c '{input: .input}' < <(echo "$REQ_LOTE"))
+                    RESP_LOTE=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$INP_LOTE")
+                    if [[ -n "$RESP_LOTE" ]]; then
+                        jq -a -s '
+                            .[0] as $c | .[1].raw as $r | .[2].data as $d |
+                            if $d then ($c + ([range(0; $r | length) | {($r[.]): ($d[.].embedding | map((. * 10000 | round) / 10000))}] | add // {})) else $c end
+                        ' < <(cat "$CACHE_FILE"; echo "$REQ_LOTE"; echo "$RESP_LOTE") > "${CACHE_FILE}.new"
+                        mv "${CACHE_FILE}.new" "$CACHE_FILE"
+                    fi
+                fi
+                rm -f "$LISTA_NUEVOS" "$LOTE_FILE"
+
+                ITEMS_FILE="$DIR_MEM_MODULOS/items.tmp.json"
+                jq -a -s -c '
+                    .[0] as $c |
+                    (.[1] | split("\n") | map(select(length > 0))) |
+                    map({modulo: ., embedding: $c[.]})
+                ' < <(cat "$CACHE_FILE"; jq -a -R -s '.' < <(printf '%s\n' "$MODS_RAW")) > "$ITEMS_FILE"
+
+                PARTS_FILE="$DIR_MEM_MODULOS/parts.tmp.json"
+                jq -a -c --argjson maxp "$MAX_PARTICION" '
+                    def sim(a; b): [a, b] | transpose | map(.[0] * .[1]) | add;
+                    def centroid(items):
+                        ([items[ ] | select(.embedding != null) | .embedding]) as $vecs |
+                        if ($vecs | length) == 0 then null
+                        else
+                            ($vecs | length) as $n |
+                            ($vecs | transpose | map(add / $n)) as $avg |
+                            ((($avg | map(. * .) | add) | sqrt)) as $norm |
+                            if $norm > 0 then ($avg | map(((. / $norm) * 10000 | round) / 10000)) else $avg end
+                        end;
+                    {rest: ., parts: [ ]} |
+                    until((.rest | length) == 0;
+                        .rest[0] as $seed |
+                        if (.rest | length) <= $maxp or ($seed.embedding == null) then
+                            .parts += [.rest] | .rest = [ ]
+                        else
+                            (.rest[1:] | map(. + {s: (if .embedding != null then sim(.embedding; $seed.embedding) else -1 end)}) | sort_by(-.s) | map(del(.s))) as $ord |
+                            .parts += [[$seed] + $ord[:($maxp - 1)]] |
+                            .rest = $ord[($maxp - 1):]
+                        end
+                    ) |
+                    .parts | to_entries | map({
+                        archivo: "modulos_\(.key + 1).json",
+                        lineas: (.value | length),
+                        embedding: centroid(.value),
+                        items: .value
+                    })
+                ' "$ITEMS_FILE" > "$PARTS_FILE"
+
+                if [[ -s "$PARTS_FILE" ]]; then
+                    rm -f "$DIR_MEM_MODULOS"/modulos_*.json
+                    TOT_PARTS=$(jq 'length' "$PARTS_FILE")
+                    jq -a -c 'to_entries | . as $e | ($e | length) as $tot | $e[ ] | (.value | del(.items)) + {ultimo: (if .key == ($tot - 1) then 1 else 0 end)}' "$PARTS_FILE" > "$INDICE_MODULOS"
+                    IDX_P=0
+                    while [[ $IDX_P -lt $TOT_PARTS ]]; do
+                        ARCH_P=$(jq -r --argjson i "$IDX_P" '.[$i].archivo' "$PARTS_FILE")
+                        jq -a -c --argjson i "$IDX_P" '.[$i].items[ ]' "$PARTS_FILE" > "$DIR_MEM_MODULOS/$ARCH_P"
+                        IDX_P=$((IDX_P + 1))
+                    done
+                    SIN_VEC=$(jq '[.[ ].items[ ] | select(.embedding == null)] | length' "$PARTS_FILE")
+                    if [[ "$SIN_VEC" -eq 0 ]]; then
+                        printf '%s\n' "$HUELLA" > "$DIR_MEM_MODULOS/huella"
+                    fi
+                fi
+                rm -f "$CACHE_FILE" "$ITEMS_FILE" "$PARTS_FILE"
+            fi
+        fi
+
+        if [[ -s "$INDICE_MODULOS" ]]; then
+            if [[ -n "$VEC_CONSULTA" ]]; then
+                if [[ "$VEC_CONSULTA" != "null" ]]; then
+                    PARTS_GANADORAS=$(jq -r -s --argjson q "$VEC_CONSULTA" '
+                        [
+                            .[ ] |
+                            select(.embedding != null) |
+                            . + {sim: ([.embedding, $q] | transpose | map(.[0] * .[1]) | add)}
+                        ] | sort_by(-.sim)[:2][ ].archivo
+                    ' "$INDICE_MODULOS" 2>/dev/null)
+                    if [[ -n "$PARTS_GANADORAS" ]]; then
+                        CANDIDATOS_TMP=""
+                        while IFS= read -r arch_p; do
+                            if [[ -n "$arch_p" ]]; then
+                                if [[ -s "$DIR_MEM_MODULOS/$arch_p" ]]; then
+                                    CANDIDATOS_TMP+="$(cat "$DIR_MEM_MODULOS/$arch_p")"$'\n'
+                                fi
+                            fi
+                        done < <(printf '%s\n' "$PARTS_GANADORAS")
+                        if [[ -n "$CANDIDATOS_TMP" ]]; then
+                            MODS_FILTRADOS=$(jq -r -s --argjson q "$VEC_CONSULTA" --argjson max "$MAX_MODULOS" '
+                                [
+                                    .[ ] |
+                                    select(.embedding != null) |
+                                    . + {sim: ([.embedding, $q] | transpose | map(.[0] * .[1]) | add)}
+                                ] | sort_by(-.sim)[:$max][ ].modulo
+                            ' < <(printf '%s' "$CANDIDATOS_TMP") 2>/dev/null)
+                            if [[ -n "$MODS_FILTRADOS" ]]; then
+                                MODULOS_ELEGIDOS="$MODS_FILTRADOS"
+                            fi
+                        fi
+                    fi
+                fi
+            fi
+        fi
+
+        if [[ "$MODULOS_ELEGIDOS" == "$MODS_RAW" ]]; then
+            if [[ -n "$ENTRADA_SPEC" ]]; then
+                MODULOS_ELEGIDOS=$(jq -R -s -r --argjson max "$MAX_MODULOS" 'split("\n") | map(select(length > 0))[:$max][ ]' < <(printf '%s\n' "$MODS_RAW"))
+            fi
+        fi
+    fi
+
+    jq -a -n --arg mods "$MODULOS_ELEGIDOS" '{
+        type: "function",
+        function: {
+            name: "bash",
+            description: "Solo cuando necesites consultar o actuar en el sistema, ejecuta modulos del sistema.",
+            parameters: {
+                type: "object",
+                properties: {
+                    comando: {
+                        type: "string",
+                        description: ("Modulos disponibles (puedes encadenarlos con ;):\n" + $mods)
+                    }
+                },
+                required: ["comando"]
+            }
+        }
+    }'
+    exit 0
+fi
+
+CMD=$(jq -r '.comando // empty' < <(printf '%s' "$1") 2>/dev/null)
+
+if grep -qE '(rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\s+(/|/\*|~|\*)|--no-preserve-root|\bmkfs\b|\bdd\s+if=|:\(\)\{:\|:&\};:|chmod\s+-R\s+777\s+/|\b(shutdown|reboot|poweroff)\b|>\s*/dev/(sd|nvme)|&)' < <(printf '%s' "$CMD"); then
+    echo "BLOQUEADO: comando de riesgo detectado ($CMD)."
+    exit 0
+fi
+
+head -c 4000 < <(timeout "$TIMEOUT_HERRAMIENTA" bash -c 'for f in "$1"/*; do if [[ -f "$f" ]]; then source "$f"; fi; done; eval "$2"' _ "$DIR_MODULOS" "$CMD" 2>&1)

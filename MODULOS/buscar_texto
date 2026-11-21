@@ -1,0 +1,11 @@
+#!/bin/bash
+# Modulo: buscar_texto <texto> [ruta]
+
+buscar_texto() {
+    if [[ -n "$1" ]]; then
+        grep -rn -m 20 "$1" "${2:-.}"
+    else
+        echo "Error: falta texto a buscar"
+        false
+    fi
+}

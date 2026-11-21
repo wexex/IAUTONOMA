@@ -1,0 +1,6 @@
+#!/bin/bash
+# Modulo: buscar <nombre> [ruta]
+
+buscar() {
+    find "${2:-.}" -maxdepth 3 -name "*$1*"
+}

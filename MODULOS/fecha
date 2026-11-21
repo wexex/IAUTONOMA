@@ -1,0 +1,4 @@
+#!/bin/bash
+# Modulo: fecha
+
+fecha() { date "+%Y-%m-%d"; }

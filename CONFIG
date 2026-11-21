@@ -1,0 +1,102 @@
+#!/bin/bash
+
+# Directorio raiz de CEREBRO2
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)"
+
+# MODELO DE GGUF
+# MODELO="$DIR/../MODELO/Qwen3.5-4B-Q4_K_M.gguf"
+MODELO="$DIR/../MODELO/Qwen3.5-2B-Q4_K_M.gguf"
+# MODELO="$DIR/../MODELO/Qwen3-1.7B-Q4_K_M.gguf"
+# MODELO="$DIR/../MODELO/Qwen3.5-0.8B-Q4_K_M.gguf"
+# MODELO="$DIR/../MODELO/Qwen3-0.6B-Q4_K_M.gguf"
+
+# Lenguaje
+HOST="localhost"
+PUERTO="8081"
+URL="http://${HOST}:${PUERTO}/v1/chat/completions"
+TEMPERATURA="0.001"
+
+# Memoria
+PUERTO_MEMORIA="8082"
+URL_MEMORIA="http://${HOST}:${PUERTO_MEMORIA}/v1/embeddings"
+MODELO_MEMORIA="$DIR/../MODELO/Qwen3-Embedding-0.6B-Q8_0.gguf"
+
+# Umbrales de similitud de refuerzo persistente
+UMBRAL_SIM="0.45"
+UMBRAL_REFUERZO="0.80"
+UMBRAL_PERSISTENTE="0.99"
+
+# Pesos iniciales
+PESO_INICIAL="0.85"
+
+# Factor de refuerzo
+FACTOR_REFUERZO="1.10"
+
+# Castigo
+DECAIMIENTO_CASTIGO="1"
+UMBRAL_CASTIGO="0.58"
+CONCEPTO_CASTIGO="error incorrecto mal equivocado no es asi falla fallo falso corregir"
+CACHE_CASTIGO="$DIR_MEMORIA/castigo.json"
+
+# Decaimiento de la memoria
+DECAIMIENTO_PERSISTENTE="24*365"
+DECAIMIENTO_MEMORIA="24*7"
+DECAIMIENTO_HIPOCAMPO="24"
+
+# Informacion del estado actual de la memoria
+VISOR_HIPOCAMPO="5"
+VISOR_EPISODICA="5"
+VISOR_PERSISTENTE="5"
+VISOR_OLVIDADOS="8"
+
+# Directorios
+DIR_HERRAMIENTAS="$DIR/HERRAMIENTAS"
+DIR_MODULOS="$DIR/MODULOS"
+DIR_SKILLS="$DIR/SKILLS"
+DIR_MEMORIA="$DIR/MEMORIA"
+DIR_REGISTROS="$DIR/REGISTROS"
+
+# Hipocampo (momento presente), Memoria episodica (1 semana) y Memoria persistente (1 anio)
+HIPOCAMPO="$DIR_MEMORIA/hipocampo.json"
+MAX_HIPOCAMPO="2"
+INDICE_EPISODICA="$DIR_MEMORIA/indice_episodica.json"
+PREFIJO_EPISODICA="episodica"
+INDICE_PERSISTENTE="$DIR_MEMORIA/indice_persistente.json"
+PREFIJO_PERSISTENTE="persistente"
+MAX_PARTICION="100"
+MAX_MEMORIA="2"
+MAX_MEM_HERRAMIENTA="1"
+
+# Memoria de modulos (enrutador escalable)
+DIR_MEM_MODULOS="$DIR_MEMORIA/MODULOS"
+INDICE_MODULOS="$DIR_MEM_MODULOS/indice.json"
+MAX_MODULOS="20"
+TIMEOUT_HERRAMIENTA="20"
+MAX_REINTENTOS="5"
+
+# Historial de todas las interacciones
+HISTORIAL="$DIR_REGISTROS/historial.log"
+LOG_SERVER="$DIR_REGISTROS/server.log"
+
+# Aburrimiento (despertar automatico y tiempo despierto en segundos)
+TIEMPO_DESPIERTO="5*60"
+ULTIMA_INTERACCION="$DIR_REGISTROS/ultima_interaccion"
+PID_ABURRIMIENTO="$DIR_REGISTROS/aburrimiento.pid"
+ESTIMULO_DESPERTAR="<<Te despiertas>>"
+ESTIMULO_SILENCIO="<<Todo esta en silencio>>"
+ESTIMULO_DORMIR="<<Te duermes>>"
+
+# Extrae el nombre limpio del modelo (sin ruta, cuantizacion -Q* ni .gguf) para mostrarlo en CHAT
+NOMBRE_IA="$(basename "$MODELO" .gguf)"
+NOMBRE_IA="${NOMBRE_IA%%-Q*}"
+
+# Nombre del Usuario
+NOMBRE_USUARIO="$(whoami)"
+
+# Separadores
+SEP_USUARIO="$NOMBRE_USUARIO:"
+SEP_IA="$NOMBRE_IA:"
+
+
+
+

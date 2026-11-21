@@ -1,0 +1,14 @@
+#!/bin/bash
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/CONFIG"
+
+llama-server \
+-m "$MODELO_MEMORIA" \
+--host "$HOST" \
+--port "$PUERTO_MEMORIA" \
+-c 512 \
+--embedding \
+-ngl 0 \
+-cram 0 \
+-lm none \
+--no-host

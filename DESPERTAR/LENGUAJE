@@ -1,0 +1,31 @@
+#!/bin/bash
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/CONFIG"
+
+if [[ -f "$LOG_SERVER" ]]; then
+    if [[ $(wc -l < "$LOG_SERVER") -ge 1000 ]]; then
+        tail -n 500 "$LOG_SERVER" > "${LOG_SERVER}.tmp"
+        mv "${LOG_SERVER}.tmp" "$LOG_SERVER"
+    fi
+fi
+
+llama-server \
+-m "$MODELO" \
+--host "$HOST" \
+--port "$PUERTO" \
+-c 4096 -n \
+2048 -np 1 \
+--jinja -ngl 99 \
+--reasoning off \
+-fa on \
+-ctk q8_0 \
+-ctv q8_0 \
+-cram 0 \
+-lm none \
+--no-host \
+--log-colors on 2>&1 | tee >(sed 's/\x1b\[[0-9;]*m//g' >> "$LOG_SERVER")
+
+
+# ver_json() { curl -s http://localhost:8081/v1/chat/completions -H "Content-Type: application/json" -d "$(jq -n --arg m "$*" --argjson t "$(./HERRAMIENTAS/run_command --spec)" '{messages:[{role:"user",content:$m}],tools:[$t],tool_choice:"auto",temperature:0.01}')" | jq .; }
+# ver_json "hola"
+

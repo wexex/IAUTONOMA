@@ -1,0 +1,16 @@
+#!/bin/bash
+# Modulo: copiar_directorio <origen>
+
+copiar_directorio() {
+    clip="/tmp/.cerebro2_clip_directorio"
+    orig="$1"
+    if [[ -z "$orig" ]]; then
+        echo "Error: falta la ruta del directorio a copiar"
+    elif [[ -d "$orig" ]]; then
+        ruta_abs="$(cd "$orig"; pwd)"
+        printf '%s\n' "$ruta_abs" > "$clip"
+        echo "Directorio copiado: $ruta_abs"
+    else
+        echo "Error: no existe el directorio ($orig)"
+    fi
+}

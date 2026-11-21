@@ -1,0 +1,4 @@
+#!/bin/bash
+# Modulo: hora
+
+hora()  { date "+%H:%M:%S"; }

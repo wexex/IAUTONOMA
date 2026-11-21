@@ -1,0 +1,13 @@
+#!/bin/bash
+# Modulo: crear_dir <ruta> / crear_directorio <ruta>
+
+crear_dir() {
+    if [[ -n "$1" ]]; then
+        if mkdir -p "$1"; then echo "Carpeta: $1"; else false; fi
+    else
+        echo "Error: falta ruta"
+        false
+    fi
+}
+
+crear_directorio() { crear_dir "$1"; }

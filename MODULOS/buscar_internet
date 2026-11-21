@@ -1,0 +1,26 @@
+#!/bin/bash
+# Modulo: buscar_internet <consulta>
+
+buscar_internet() {
+    local query="$*"
+    if [[ -n "$query" ]]; then
+        local html
+        html=$(curl -sG -A "Mozilla/5.0" --max-time 8 "https://lite.duckduckgo.com/lite/" --data-urlencode "q=$query")
+        local filtrado
+        filtrado=$(grep -A 1 "result-snippet" <<< "$html")
+        local limpio
+        limpio=$(sed -E 's/<[^>]+>//g; s/^[[:space:]]+//; s/^--$//; s/&amp;/\&/g; s/&quot;/"/g; s/&#39;/'"'"'/g' <<< "$filtrado")
+        local count=0
+        local linea=""
+        while IFS= read -r linea; do
+            if [[ -n "$linea" ]]; then
+                echo "$linea"
+                count=$((count + 1))
+                if [[ $count -ge 6 ]]; then break; fi
+            fi
+        done <<< "$limpio"
+    else
+        echo "Error: falta la consulta"
+        false
+    fi
+}
