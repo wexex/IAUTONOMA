@@ -2,11 +2,15 @@
 
 **Agente autónomo local implementado íntegramente en Bash y `jq` sobre `llama.cpp`**, con memoria jerárquica de decaimiento continuo, enrutamiento vectorial de herramientas y gestión autónoma del ciclo de vigilia y sueño.
 
+![Estado](https://img.shields.io/badge/Estado-En%20desarrollo%20activo-F39C12)
 ![Bash](https://img.shields.io/badge/Bash-Pure%20Shell-4EAA25?logo=gnubash&logoColor=white)
 ![jq](https://img.shields.io/badge/Data-jq-007ACC)
 ![llama.cpp](https://img.shields.io/badge/Inference-llama.cpp-E67E22)
 ![Local-First](https://img.shields.io/badge/Execution-100%25%20Local-2E7D32)
 ![Platforms](https://img.shields.io/badge/Platforms-Linux%20%7C%20Windows%20Git%20Bash%20%7C%20Termux-555555)
+
+> [!NOTE]
+> **Proyecto en desarrollo activo.** La arquitectura, los parámetros de `CONFIG`, el formato interno de memoria y el catálogo de módulos se encuentran en evolución continua y pueden sufrir cambios entre iteraciones.
 
 ---
 
@@ -24,6 +28,7 @@
 10. [Configuración](#configuración)
 11. [Catálogo de módulos y extensibilidad](#catálogo-de-módulos-y-extensibilidad)
 12. [Análisis empírico y limitaciones en modelos compactos](#análisis-empírico-y-limitaciones-en-modelos-compactos)
+13. [Estado del proyecto](#estado-del-proyecto)
 
 ---
 
@@ -313,3 +318,9 @@ Parte del alcance experimental de **IAUTONOMA** consiste en caracterizar el comp
 | **Cobertura del enrutador Top-K** | Si el módulo adecuado queda fuera del conjunto seleccionado, el modelo improvisa con una herramienta incorrecta o niega la capacidad. | Con `28` módulos disponibles y `MAX_MODULOS="20"`, consultas excesivamente abstractas pueden desplazar el módulo pertinente fuera del Top-20 vectorial. |
 | **Granularidad de la inhibición semántica** | Hablar sobre errores técnicos ajenos puede atenuar un recuerdo válido, o un error ocurrido hace más de un turno puede quedar sin atenuar. | `DECAIMIENTO_CASTIGO` se dispara por similitud global (`>= 0.58`) contra `CONCEPTO_CASTIGO` y actúa únicamente sobre el último turno registrado en el hipocampo. |
 | **Precisión aritmética limitada** | Integra correctamente memoria y salidas de herramientas, pero presenta errores ocasionales en restas de horas o cálculos numéricos simples. | Limitación inherente a la capacidad de razonamiento numérico en modelos de `2B` parámetros cuantizados a `4 bits`. |
+
+---
+
+## Estado del proyecto
+
+**IAUTONOMA** se encuentra actualmente en **desarrollo activo** como plataforma experimental de arquitectura cognitiva local. Los subsistemas de memoria, inhibición semántica, enrutamiento de módulos y gestión del ciclo de vigilia continúan refinándose de forma iterativa, por lo que tanto la configuración como las interfaces internas pueden cambiar conforme evolucione el diseño.
