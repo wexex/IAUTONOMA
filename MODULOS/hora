@@ -1,4 +1,4 @@
 #!/bin/bash
-# Modulo: hora
+# Modulo: hora - Muestra la hora actual del reloj del sistema (horas, minutos y segundos)
 
 hora()  { date "+%H:%M:%S"; }

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: renombrar <origen> <destino>
+# Modulo: renombrar <origen> <destino> - Cambia el nombre de un fichero o carpeta existente
 
 renombrar() {
     if [[ -e "$1" ]]; then

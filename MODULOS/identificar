@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: identificar <ruta|comando>
+# Modulo: identificar <ruta|comando> - Identifica que tipo de fichero, carpeta o comando es y si esta vacio
 
 identificar() {
     tipo() {

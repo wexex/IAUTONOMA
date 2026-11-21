@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: escribir <ruta> [linea_ini] [linea_fin] '<texto>' y anadir <ruta> '<texto>' (usar comillas simples '')
+# Modulo: escribir <ruta> [linea_ini] [linea_fin] '<texto>' y anadir <ruta> '<texto>' - Escribe, sobrescribe o anade texto en un fichero (usar comillas simples '')
 
 escribir() {
     local ruta="$1"

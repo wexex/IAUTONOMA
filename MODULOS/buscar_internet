@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: buscar_internet <consulta>
+# Modulo: buscar_internet <consulta> - Busca informacion actualizada y resultados en internet o la web
 
 buscar_internet() {
     local query="$*"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: crear_fichero <ruta>
+# Modulo: crear_fichero <ruta> - Crea un fichero o archivo vacio nuevo
 
 crear_fichero() {
     if [[ -n "$1" ]]; then

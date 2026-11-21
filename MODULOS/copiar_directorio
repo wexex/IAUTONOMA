@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: copiar_directorio <origen>
+# Modulo: copiar_directorio <origen> - Copia una carpeta o directorio al portapapeles para pegarlo despues
 
 copiar_directorio() {
     clip="/tmp/.cerebro2_clip_directorio"

@@ -1,4 +1,4 @@
 #!/bin/bash
-# Modulo: listar [ruta]
+# Modulo: listar [ruta] - Lista los ficheros y carpetas contenidos en un directorio
 
 listar() { ls -la "$@"; }

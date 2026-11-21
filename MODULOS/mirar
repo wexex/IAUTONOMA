@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: mirar <ruta>
+# Modulo: mirar <ruta> - Lee y muestra el contenido de un fichero o archivo
 
 
 CONTENIDO(){

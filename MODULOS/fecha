@@ -1,4 +1,4 @@
 #!/bin/bash
-# Modulo: fecha
+# Modulo: fecha - Muestra la fecha actual del calendario (anio, mes y dia)
 
 fecha() { date "+%Y-%m-%d"; }

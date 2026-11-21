@@ -159,9 +159,9 @@ La gestión de disponibilidad y consumo de recursos se coordina entre `ENTRADA` 
 
 ### Enrutador procedimental escalable (`HERRAMIENTAS/bash`)
 
-* **Descubrimiento dinámico:** inspecciona las cabeceras `# Modulo:` de todos los scripts ubicados en `MODULOS/`.
+* **Descubrimiento dinámico:** inspecciona las cabeceras semánticas `# Modulo:` de todos los scripts ubicados en `MODULOS/`.
 * **Indexación incremental por lotes:** cuando el número de módulos supera `MAX_MODULOS` (`20`) y cambia la huella `cksum`, vectoriza únicamente los módulos nuevos en lotes de `50`, los agrupa en particiones por similitud y regenera `MEMORIA/MODULOS/indice.json`.
-* **Selección Top-K:** en tiempo de consulta reutiliza el vector `VEC_CONSULTA` calculado por `AGENTE`, selecciona las Top-2 particiones y entrega al esquema `tools` los `20` módulos más relevantes.
+* **Selección Top-K con anclaje de `skill`:** en tiempo de consulta reutiliza el vector `VEC_CONSULTA` calculado por `AGENTE`, selecciona las Top-2 particiones y entrega al esquema `tools` los `20` módulos más relevantes garantizando siempre la presencia del módulo `skill` para consultar `SKILLS/`.
 
 ### Controles de seguridad y contención
 
@@ -315,7 +315,7 @@ Parte del alcance experimental de **IAUTONOMA** consiste en caracterizar el comp
 
 | Limitación | Impacto potencial | Origen arquitectónico |
 | :--- | :--- | :--- |
-| **Cobertura del enrutador Top-K** | Si el módulo adecuado queda fuera del conjunto seleccionado, el modelo improvisa con una herramienta incorrecta o niega la capacidad. | Con `28` módulos disponibles y `MAX_MODULOS="20"`, consultas excesivamente abstractas pueden desplazar el módulo pertinente fuera del Top-20 vectorial. |
+| **Cobertura del enrutador Top-K** | Si el módulo adecuado queda fuera del conjunto seleccionado, el modelo improvisa con una herramienta incorrecta o niega la capacidad. | Mitigado mediante descripciones semánticas completas en cada cabecera `# Modulo:` y la inclusión garantizada del módulo `skill` dentro del cupo `MAX_MODULOS="20"`; aun así, en catálogos muy extensos una consulta excesivamente ambigua puede desplazar un módulo específico fuera del Top-20. |
 | **Granularidad de la inhibición semántica** | Hablar sobre errores técnicos ajenos puede atenuar un recuerdo válido, o un error ocurrido hace más de un turno puede quedar sin atenuar. | `DECAIMIENTO_CASTIGO` se dispara por similitud global (`>= 0.58`) contra `CONCEPTO_CASTIGO` y actúa únicamente sobre el último turno registrado en el hipocampo. |
 | **Precisión aritmética limitada** | Integra correctamente memoria y salidas de herramientas, pero presenta errores ocasionales en restas de horas o cálculos numéricos simples. | Limitación inherente a la capacidad de razonamiento numérico en modelos de `2B` parámetros cuantizados a `4 bits`. |
 

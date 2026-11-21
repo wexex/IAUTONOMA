@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: buscar_texto <texto> [ruta]
+# Modulo: buscar_texto <texto> [ruta] - Busca una palabra o cadena de texto dentro de los ficheros
 
 buscar_texto() {
     if [[ -n "$1" ]]; then

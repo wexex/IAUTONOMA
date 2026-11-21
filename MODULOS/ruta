@@ -1,4 +1,4 @@
 #!/bin/bash
-# Modulo: ruta
+# Modulo: ruta - Muestra la ruta o directorio de trabajo actual (PWD)
 
 ruta() { echo "La ruta es: $PWD"; }

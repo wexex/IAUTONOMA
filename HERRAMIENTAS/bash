@@ -179,6 +179,21 @@ if [[ "$1" == "--spec" ]]; then
                 MODULOS_ELEGIDOS=$(jq -R -s -r --argjson max "$MAX_MODULOS" 'split("\n") | map(select(length > 0))[:$max][ ]' < <(printf '%s\n' "$MODS_RAW"))
             fi
         fi
+
+        if [[ -f "$DIR_MODULOS/skill" ]]; then
+            MOD_SKILL=$(grep -hi "^# Modulo:" "$DIR_MODULOS/skill" 2>/dev/null)
+            MOD_SKILL="${MOD_SKILL//$'\r'/}"
+            if [[ -n "$MOD_SKILL" ]]; then
+                MODULOS_ELEGIDOS=$(jq -R -s -r --arg sk "$MOD_SKILL" --argjson max "$MAX_MODULOS" '
+                    (split("\n") | map(select(length > 0))) as $lista |
+                    if ($lista | index($sk)) != null then
+                        $lista[:$max][ ]
+                    else
+                        ($lista[:($max - 1)] + [$sk])[ ]
+                    end
+                ' < <(printf '%s\n' "$MODULOS_ELEGIDOS"))
+            fi
+        fi
     fi
 
     jq -a -n --arg mods "$MODULOS_ELEGIDOS" '{

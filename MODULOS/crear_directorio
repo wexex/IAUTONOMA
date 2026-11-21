@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: crear_dir <ruta> / crear_directorio <ruta>
+# Modulo: crear_dir <ruta> / crear_directorio <ruta> - Crea una carpeta o directorio nuevo
 
 crear_dir() {
     if [[ -n "$1" ]]; then

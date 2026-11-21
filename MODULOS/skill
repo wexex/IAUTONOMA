@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: skill [nombre] (sin nombre lista las skills disponibles)
+# Modulo: skill [nombre] - Consulta las guias y manuales de uso en SKILLS (sin nombre lista las skills disponibles)
 
 skill() {
     base="$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/SKILLS"

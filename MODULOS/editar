@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: editar <ruta> <buscar> <reemplazar>
+# Modulo: editar <ruta> <buscar> <reemplazar> - Modifica un fichero reemplazando un texto por otro
 
 editar() {
     local ruta="$1" buscar="$2" reemplazar="$3"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: maquina
+# Modulo: maquina - Muestra informacion del equipo, usuario, sistema operativo, CPU, memoria RAM y GPU
 
 maquina() {
     echo "Usuario: $(whoami)"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: pegar_fichero [destino]
+# Modulo: pegar_fichero [destino] - Pega en el destino el fichero o archivo copiado previamente
 
 pegar_fichero() {
     local clip="/tmp/.cerebro2_clip_fichero"

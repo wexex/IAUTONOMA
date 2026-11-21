@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: copiar_fichero <origen>
+# Modulo: copiar_fichero <origen> - Copia un fichero o archivo al portapapeles para pegarlo despues
 
 copiar_fichero() {
     clip="/tmp/.cerebro2_clip_fichero"

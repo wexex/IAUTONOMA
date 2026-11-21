@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: pegar_directorio [destino]
+# Modulo: pegar_directorio [destino] - Pega en el destino la carpeta o directorio copiado previamente
 
 pegar_directorio() {
     local clip="/tmp/.cerebro2_clip_directorio"

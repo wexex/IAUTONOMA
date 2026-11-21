@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: mover <origen> <destino>
+# Modulo: mover <origen> <destino> - Mueve o traslada un fichero o carpeta a otra ruta
 
 mover() {
     if [[ -e "$1" ]]; then
