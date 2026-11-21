@@ -41,7 +41,7 @@ Todo el sistema —desde la recuperación semántica y el particionamiento por c
 Sus capacidades principales incluyen:
 
 * **Memoria jerárquica en tres capas temporales más índice procedimental:** hipocampo de corto plazo, memoria episódica particionada y memoria persistente con promoción automática y olvido exponencial en tiempo real.
-* **Inhibición semántica no destructiva:** atenuación gradual de recuerdos erróneos detectados por similitud vectorial ante correcciones del usuario.
+* **Reconsolidación y plasticidad vectorial (LTP / LTD):** evolución de la dirección vectorial y refuerzo sináptico ante confirmaciones (`sim >= 0.80`), junto con atenuación gradual de recuerdos desplazados por divergencia (`0.45 <= sim < 0.80`) sin listas de palabras fijas.
 * **Enrutamiento vectorial escalable de módulos:** indexación incremental con verificación por `cksum` y selección Top-K para escalar el catálogo de herramientas sin saturar la ventana de contexto.
 * **Gestión autónoma de recursos:** arranque bajo demanda de los servidores de lenguaje y embeddings, percepción temporal de inactividad y suspensión automática con liberación de memoria GPU/RAM.
 
@@ -50,7 +50,7 @@ Sus capacidades principales incluyen:
 ## Principios de diseño
 
 1. **Separación entre cognición y soporte operativo:** el código proporciona memoria, contexto temporal y herramientas ejecutables, pero no impone respuestas predefinidas ni intercepta el lenguaje natural mediante reglas condicionales fijas.
-2. **Enrutamiento puramente semántico:** la recuperación de recuerdos, la consolidación, el filtrado de módulos y la inhibición por corrección se calculan exclusivamente por similitud vectorial (`Qwen3-Embedding-0.6B`, `1024` dimensiones).
+2. **Enrutamiento y plasticidad puramente semánticos:** la recuperación de recuerdos, la reconsolidación (LTP), la atenuación por divergencia (LTD) y el filtrado de módulos se calculan exclusivamente por geometría vectorial (`Qwen3-Embedding-0.6B`, `1024` dimensiones), sin etiquetas ni listas léxicas.
 3. **Minimalismo e inspeccionabilidad:** toda la memoria y los registros se persisten en texto plano y JSON Lines (JSONL) con escritura atómica (`*.$$.tmp`), facilitando la auditoría directa sin herramientas propietarias.
 4. **Operación local y eficiencia de hardware:** el modelo de lenguaje corre acelerado en GPU con caché KV cuantizada (`q8_0`) y Flash Attention, mientras que el modelo de embeddings corre en CPU (`-ngl 0`) para no competir por VRAM, y el proceso de olvido opera sin requerir ningún servidor LLM activo.
 
@@ -72,7 +72,6 @@ flowchart TD
     E -->|"Arranque bajo demanda"| L
     E -->|"Arranque bajo demanda"| M
     E -->|"Actualiza actividad"| AB
-    E -->|"Inhibición semántica"| MEM
     E --> A["AGENTE<br/>Recuperación + Bucle iterativo (hasta 5 pasos)"]
 
     subgraph MEM["Almacenamiento Vectorial (MEMORIA/)"]
@@ -92,7 +91,7 @@ flowchart TD
     B --> MOD["MODULOS/<br/>28 ficheros / 30 comandos Bash"]
     MOD --> SK["SKILLS/<br/>Documentación operativa bajo demanda"]
 
-    E -->|"Consolidación y refuerzo"| MEM
+    E -->|"Reconsolidación (LTP / LTD)"| MEM
     OL -.->|"Decaimiento y poda (< 0.45)"| H
     OL -.->|"Decaimiento y poda (< 0.45)"| EP
     OL -.->|"Decaimiento y poda (< 0.45)"| PE
@@ -101,9 +100,8 @@ flowchart TD
 ### Flujo de una interacción
 
 1. **Recepción y vigilia (`ENTRADA`):** registra la marca temporal de actividad. Si los servicios en `:8081` o `:8082` están detenidos, los inicia en segundo plano con `setsid`, espera confirmación HTTP 200 en `/health`, verifica `ABURRIMIENTO` y envía el estímulo interno `<<Te despiertas>>` antes de atender la consulta.
-2. **Inhibición semántica previa (`ENTRADA`):** evalúa la similitud de la entrada frente a `CONCEPTO_CASTIGO`. Si supera `UMBRAL_CASTIGO` (`0.58`), atenúa el último turno del hipocampo y sus recuerdos equivalentes en capas superiores.
-3. **Recuperación y razonamiento (`AGENTE`):** vectoriza la consulta (anclándola al último turno del hipocampo si tiene menos de `25` caracteres), recupera recuerdos relevantes, solicita a `HERRAMIENTAS/bash --spec` los módulos más afines y ejecuta el bucle agéntico contra `LENGUAJE`.
-4. **Consolidación y registro (`ENTRADA`):** vectoriza el par interacción-respuesta con fecha exacta (`YYYY-MM-DD HH:MM:SS`), actualiza el hipocampo, consolida en episódica, promueve a persistente si corresponde y anexa el registro completo en `REGISTROS/historial.log`.
+2. **Recuperación y razonamiento (`AGENTE`):** vectoriza la consulta (anclándola al último turno del hipocampo si tiene menos de `25` caracteres), recupera recuerdos relevantes, solicita a `HERRAMIENTAS/bash --spec` los módulos más afines (con `skill` garantizado) y ejecuta el bucle agéntico contra `LENGUAJE`.
+3. **Reconsolidación, plasticidad (LTP / LTD) y registro (`ENTRADA`):** vectoriza el par interacción-respuesta con fecha exacta (`YYYY-MM-DD HH:MM:SS`), aplica reconsolidación con refuerzo (`>= 0.80`) o atenuación por divergencia (`0.45..0.80`) en hipocampo, episódica y persistente, promueve a largo plazo si alcanza `>= 0.99` y anexa el turno en `REGISTROS/historial.log`.
 
 ---
 
@@ -121,18 +119,18 @@ Cada recuerdo se almacena como un objeto JSON con marca temporal, mensajes `user
 ### Mecánicas de consolidación, refuerzo y decaimiento
 
 * **Decaimiento exponencial continuo (`DESPERTAR/OLVIDO`):** cada segundo multiplica las componentes de cada vector por su factor de atenuación y elimina toda entrada cuya norma L2 caiga por debajo de `UMBRAL_SIM` (`0.45`). Cuando una partición queda vacía, `OLVIDO` elimina el archivo del disco y purga su referencia en el índice. Incluye un monitor de terminal en tiempo real con barras de vitalidad por capa y registro de elementos purgados.
-* **Consolidación sin duplicados y refuerzo:** al guardar en una partición temática, si existe un recuerdo previo con similitud coseno `>= UMBRAL_REFUERZO` (`0.80`), se fusiona actualizando contenido y fecha, y se refuerza su norma multiplicándola por `FACTOR_REFUERZO` (`1.10`, acotada a `1.0`). El mismo refuerzo se aplica al recuerdo ganador durante la recuperación en `AGENTE`.
+* **Reconsolidación y potenciación sináptica (LTP, `sim >= 0.80`):** al guardar un turno en el hipocampo o en una partición temática, si existe un recuerdo previo con similitud coseno `>= UMBRAL_REFUERZO` (`0.80`), se fusiona actualizando contenido, fecha y **dirección vectorial al nuevo turno**, y se refuerza su norma multiplicándola por `FACTOR_REFUERZO` (`1.10`, acotada a `1.0`). El refuerzo de norma se aplica igualmente al recuerdo ganador durante la recuperación en `AGENTE`.
+* **Depresión sináptica por colisión y divergencia (LTD, `0.45 <= sim < 0.80`):** cuando el nuevo turno (entrada del usuario más respuesta del modelo) cae dentro del mismo dominio temático que un recuerdo previo (`>= 0.45`) pero diverge en su dirección semántica (`< 0.80`) por una corrección o cambio de estado, el sistema atenúa el recuerdo previo más cercano en conflicto a la norma exacta equivalente a `DECAIMIENTO_CASTIGO` (`1 hora` de vida residual antes de `0.45`) en hipocampo, episódica y persistente, e inserta el nuevo turno actualizado con peso limpio (`0.85`).
 * **Promoción automática a largo plazo:** cualquier recuerdo de la capa episódica que alcance o supere `UMBRAL_PERSISTENTE` (`0.99`) —ya sea por repetición o por consulta frecuente— se promueve automáticamente a la capa persistente.
 * **Equilibrio en la recuperación (`AGENTE`):** las consultas recuperan hasta `MAX_MEMORIA` (`2`) recuerdos adicionales al hipocampo, limitando a `MAX_MEM_HERRAMIENTA` (`1`) el número de recuerdos procedentes de salidas previas de herramientas para evitar la saturación del contexto con datos volátiles. Todos los recuerdos inyectados incluyen el prefijo `[YYYY-MM-DD HH:MM:SS]`.
-* **Inhibición semántica por corrección (`DECAIMIENTO_CASTIGO`):** cuando la entrada del usuario presenta una similitud `>= 0.58` frente a `CONCEPTO_CASTIGO`, el sistema no destruye el historial inmediatamente; recalcula la norma objetivo equivalente a `1 hora` de vida residual antes del umbral `0.45` y atenúa el último turno del hipocampo y sus equivalentes (`>= 0.80`) en episódica y persistente, delegando su desaparición progresiva a `OLVIDO`.
 
 ### Formulación matemática
 
-Siendo $u$ el umbral de poda (`UMBRAL_SIM = 0.45`), $p_0$ la norma de referencia (`PESO_INICIAL = 0.85` en hipocampo/episódica y `1.0` en persistente), $T$ el horizonte de decaimiento de la capa y $t_c$ la vida residual tras inhibición (`DECAIMIENTO_CASTIGO = 1 h`):
+Siendo $u$ el umbral de poda (`UMBRAL_SIM = 0.45`), $p_0$ la norma de referencia (`PESO_INICIAL = 0.85` en hipocampo/episódica y `1.0` en persistente), $T$ el horizonte de decaimiento de la capa y $t_c$ la vida residual tras atenuación por divergencia (`DECAIMIENTO_CASTIGO = 1 h`):
 
 $$d = \exp\left(\frac{\ln(u / p_0)}{T_{\text{seg}}}\right), \qquad n_{\text{obj}} = u \cdot \exp\left(\ln\left(\frac{p_0}{u}\right) \cdot \frac{t_c}{T_{\text{horas}}}\right)$$
 
-donde $d$ es el factor de atenuación aplicado cada segundo por `DESPERTAR/OLVIDO` y $n_{\text{obj}}$ es la norma L2 a la que se reduce un recuerdo cuando se activa la inhibición semántica.
+donde $d$ es el factor de atenuación aplicado cada segundo por `DESPERTAR/OLVIDO` y $n_{\text{obj}}$ es la norma L2 a la que se reduce un recuerdo desplazado mediante LTD.
 
 ---
 
@@ -178,7 +176,7 @@ Antes de ejecutar cualquier instrucción en el subshell aislado, `HERRAMIENTAS/b
 IAUTONOMA/
 ├── CONFIG                  # Configuración centralizada (modelos, puertos, umbrales y tiempos)
 ├── CHAT                    # Interfaz conversacional de terminal con historial
-├── ENTRADA                 # Orquestador principal: vigilia, inhibición, consolidación y logs
+├── ENTRADA                 # Orquestador principal: vigilia, reconsolidación (LTP/LTD) y logs
 ├── AGENTE                  # Motor de inferencia, recuperación vectorial y bucle iterativo
 ├── DESPERTAR/
 │   ├── LENGUAJE            # Lanzador llama-server para chat (:8081, GPU, KV-cache q8_0)
@@ -233,7 +231,7 @@ Asegúrate de disponer de los modelos GGUF en `../MODELO/` o actualiza las varia
 ```
 
 > [!IMPORTANT]
-> Utiliza siempre `./CHAT` o `./ENTRADA` como puntos de acceso al sistema. Invocar `AGENTE`, `HERRAMIENTAS/bash` o los scripts de `MODULOS/` de forma aislada omite el despertar automático de servicios, la inhibición semántica, la consolidación de memoria y la persistencia en el historial.
+> Utiliza siempre `./CHAT` o `./ENTRADA` como puntos de acceso al sistema. Invocar `AGENTE`, `HERRAMIENTAS/bash` o los scripts de `MODULOS/` de forma aislada omite el despertar automático de servicios, la reconsolidación y plasticidad vectorial (LTP / LTD) y la persistencia en el historial.
 
 ---
 
@@ -248,11 +246,11 @@ Todos los parámetros operativos se centralizan en `CONFIG`:
 | `PUERTO` / `PUERTO_MEMORIA` | `8081` / `8082` | Puertos locales para los servicios `LENGUAJE` y `MEMORIA`. |
 | `TEMPERATURA` | `0.001` | Temperatura de muestreo para máxima reproducibilidad en llamadas a herramientas. |
 | `PESO_INICIAL` | `0.85` | Norma L2 asignada a cada recuerdo recién consolidado. |
-| `UMBRAL_SIM` | `0.45` | Umbral mínimo de similitud de recuperación y corte de poda en `OLVIDO`. |
-| `UMBRAL_REFUERZO` | `0.80` | Similitud mínima para fusionar un recuerdo duplicado y reforzar su norma. |
+| `UMBRAL_SIM` | `0.45` | Umbral mínimo de similitud de recuperación, límite inferior de LTD y corte de poda en `OLVIDO`. |
+| `UMBRAL_REFUERZO` | `0.80` | Similitud mínima para reconsolidar y reforzar un recuerdo (LTP). |
 | `FACTOR_REFUERZO` | `1.10` | Multiplicador aplicado a la norma L2 al reforzar o rescatar un recuerdo (tope `1.0`). |
 | `UMBRAL_PERSISTENTE` | `0.99` | Norma mínima requerida para promover un recuerdo de episódica a persistente. |
-| `UMBRAL_CASTIGO` / `DECAIMIENTO_CASTIGO` | `0.58` / `1` | Umbral de detección de correcciones y horas residuales tras inhibición semántica. |
+| `DECAIMIENTO_CASTIGO` | `1` | Horas de vida residual asignadas a un recuerdo desplazado por divergencia (LTD). |
 | `DECAIMIENTO_HIPOCAMPO` / `_MEMORIA` / `_PERSISTENTE` | `24` / `24*7` / `24*365` | Horizonte temporal en horas para el decaimiento en cada capa de memoria. |
 | `MAX_HIPOCAMPO` / `MAX_MEMORIA` / `MAX_MEM_HERRAMIENTA` | `2` / `2` / `1` | Límites de turnos inyectados en el contexto por turno de inferencia. |
 | `MAX_PARTICION` / `MAX_MODULOS` | `100` / `20` | Tamaño máximo de partición JSONL y tope Top-K de módulos enviados al prompt. |
@@ -316,11 +314,11 @@ Parte del alcance experimental de **IAUTONOMA** consiste en caracterizar el comp
 | Limitación | Impacto potencial | Origen arquitectónico |
 | :--- | :--- | :--- |
 | **Cobertura del enrutador Top-K** | Si el módulo adecuado queda fuera del conjunto seleccionado, el modelo improvisa con una herramienta incorrecta o niega la capacidad. | Mitigado mediante descripciones semánticas completas en cada cabecera `# Modulo:` y la inclusión garantizada del módulo `skill` dentro del cupo `MAX_MODULOS="20"`; aun así, en catálogos muy extensos una consulta excesivamente ambigua puede desplazar un módulo específico fuera del Top-20. |
-| **Granularidad de la inhibición semántica** | Hablar sobre errores técnicos ajenos puede atenuar un recuerdo válido, o un error ocurrido hace más de un turno puede quedar sin atenuar. | `DECAIMIENTO_CASTIGO` se dispara por similitud global (`>= 0.58`) contra `CONCEPTO_CASTIGO` y actúa únicamente sobre el último turno registrado en el hipocampo. |
-| **Precisión aritmética limitada** | Integra correctamente memoria y salidas de herramientas, pero presenta errores ocasionales en restas de horas o cálculos numéricos simples. | Limitación inherente a la capacidad de razonamiento numérico en modelos de `2B` parámetros cuantizados a `4 bits`. |
+| **Frontera entre matiz y divergencia (LTP / LTD)** | Un subtema nuevo muy próximo (`0.45 <= sim < 0.80`) dentro del mismo hilo puede atenuar a `1 h` de vida el recuerdo previo más cercano de la partición. | El sistema evalúa el vector conjunto (entrada + respuesta del modelo) sin listas léxicas; la transición entre reconsolidación (`>= 0.80`) y desplazamiento (`0.45..0.80`) depende exclusivamente de la geometría del embedding. |
+| **Precisión aritmética limitada** | Integra correctamente memoria y salidas de herramientas, pero presenta errores ocasionales en restas de horas o cálculos numéricos simples. | Limitación inherente a la capacidad de razonamiento numérico en modelos de `2B` parámetros cuantizados a `4 bits` (reservado el módulo de cálculo para futura prueba de autoprogramación). |
 
 ---
 
 ## Estado del proyecto
 
-**IAUTONOMA** se encuentra actualmente en **desarrollo activo** como plataforma experimental de arquitectura cognitiva local. Los subsistemas de memoria, inhibición semántica, enrutamiento de módulos y gestión del ciclo de vigilia continúan refinándose de forma iterativa, por lo que tanto la configuración como las interfaces internas pueden cambiar conforme evolucione el diseño.
+**IAUTONOMA** se encuentra actualmente en **desarrollo activo** como plataforma experimental de arquitectura cognitiva local. Los subsistemas de memoria, plasticidad vectorial (LTP / LTD), enrutamiento de módulos y gestión del ciclo de vigilia continúan refinándose de forma iterativa, por lo que tanto la configuración como las interfaces internas pueden cambiar conforme evolucione el diseño.
