@@ -8,6 +8,7 @@ FECHA_HORA=$(date "+%Y-%m-%d %H:%M:%S")
 # Argumentos recibidos:
 MODO_INTERNO=0
 if [[ "$1" == "--interno" ]]; then MODO_INTERNO=1; shift; fi
+export MODO_INTERNO
 
 # Cargar entrada
 ENTRADA="$*"
@@ -58,7 +59,7 @@ if [[ $MODO_INTERNO -eq 0 ]]; then
     fi
 
     if [[ $ACABA_DE_DESPERTAR -eq 1 ]]; then
-        "$DIR/ENTRADA" --interno "$ESTIMULO_DESPERTAR" >/dev/null 2>/dev/null
+        ENTRADA="[$FECHA_HORA] $ESTIMULO_DESPERTAR $ENTRADA"
     fi
 else
     if ! curl -sf "http://${HOST}:${PUERTO}/health" >/dev/null 2>/dev/null; then
@@ -174,15 +175,18 @@ guardar_en_capa() {
                         ([
                             $marcados | to_entries[ ] |
                             select(
-                                .value._loro == 1 or
+                                (((.value.messages[0].content // "") | startswith("<<")) | not) and
                                 (
-                                    .value._sim >= $umb and .value._sim < $uref and
+                                    .value._loro == 1 or
                                     (
-                                        if (.value._sa != null and .value._su != null) then
-                                            ((.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min) or (.value._su >= $u_med and (.value._su - .value._sa) >= ($d_min * 2)))
-                                        else
-                                            (.value._sim >= $u_med)
-                                        end
+                                        .value._sim >= $umb and .value._sim < $uref and
+                                        (
+                                            if (.value._sa != null and .value._su != null) then
+                                                ((.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min) or (.value._su >= $u_med and (.value._su - .value._sa) >= ($d_min * 2)))
+                                            else
+                                                (.value._sim >= $u_med)
+                                            end
+                                        )
                                     )
                                 )
                             )
@@ -294,9 +298,9 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
     RESP_MEM=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAYLOAD_MEM")
     if [[ -z "$RESP_MEM" ]]; then RESP_MEM="{}"; fi
 
-    LINEA_TURNO=$(jq -a -c --arg f "$FECHA_HORA" --arg u "$ENTRADA_UNA_LINEA" --arg a "$RESPUESTA_UNA_LINEA" --argjson peso "$PESO_INICIAL" --argjson mint "$MODO_INTERNO" '{
+    LINEA_TURNO=$(jq -a -c --arg f "$FECHA_HORA" --arg u "$ENTRADA_UNA_LINEA" --arg a "$RESPUESTA_UNA_LINEA" --argjson peso "$PESO_INICIAL" '{
         fecha: $f,
-        herramienta: (if (($a | startswith("[")) or $mint == 1) then 1 else 0 end),
+        herramienta: (if ($a | startswith("[")) then 1 else 0 end),
         messages: [
             {"role": "user", "content": $u},
             {"role": "assistant", "content": $a}
@@ -383,15 +387,18 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                 ([
                     $marcados | to_entries[ ] |
                     select(
-                        .value._loro == 1 or
+                        (((.value.messages[0].content // "") | startswith("<<")) | not) and
                         (
-                            .value._sim >= $umb and .value._sim < $uref and
+                            .value._loro == 1 or
                             (
-                                if (.value._sa != null and .value._su != null) then
-                                    ((.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min) or (.value._su >= $u_med and (.value._su - .value._sa) >= ($d_min * 2)))
-                                else
-                                    (.value._sim >= $u_med)
-                                end
+                                .value._sim >= $umb and .value._sim < $uref and
+                                (
+                                    if (.value._sa != null and .value._su != null) then
+                                        ((.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min) or (.value._su >= $u_med and (.value._su - .value._sa) >= ($d_min * 2)))
+                                    else
+                                        (.value._sim >= $u_med)
+                                    end
+                                )
                             )
                         )
                     )
@@ -427,9 +434,9 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
     # 2. Guardar en Memoria Episodica particionada
     guardar_en_capa "$INDICE_EPISODICA" "$PREFIJO_EPISODICA" "$LINEA_TURNO" "$NORM_OBJ_MEM"
 
-    # 3. Ascenso a Memoria Persistente particionada si alcanza norma >= $UMBRAL_PERSISTENTE (excluido cualquier dato volatil de herramienta), o LTD si colisiona con un recuerdo persistente
+    # 3. Ascenso a Memoria Persistente particionada si alcanza norma >= $UMBRAL_PERSISTENTE (excluido cualquier dato volatil de herramienta o estimulo de vigilia), o LTD si colisiona con un recuerdo persistente
     CANDIDATO_PER=$(jq -a -c -s --argjson uper "$UMBRAL_PERSISTENTE" '
-        [ .[ ] | select((.herramienta // 0) == 0 and (((.messages[1].content // "") | startswith("[")) | not) and .embedding != null and ((.embedding | map(. * .) | add | sqrt) >= $uper)) ][-1] // empty
+        [ .[ ] | select((.herramienta // 0) == 0 and (((.messages[1].content // "") | startswith("[")) | not) and (((.messages[0].content // "") | startswith("<<")) | not) and .embedding != null and ((.embedding | map(. * .) | add | sqrt) >= $uper)) ][-1] // empty
     ' "$DIR_MEMORIA/$ULTIMA_PARTICION")
     if [[ -n "$CANDIDATO_PER" ]]; then
         guardar_en_capa "$INDICE_PERSISTENTE" "$PREFIJO_PERSISTENTE" "$CANDIDATO_PER" "$NORM_OBJ_PER"
@@ -495,15 +502,18 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                         ([
                             $marcados | to_entries[ ] |
                             select(
-                                .value._loro == 1 or
+                                (((.value.messages[0].content // "") | startswith("<<")) | not) and
                                 (
-                                    .value._sim >= $umb and .value._sim < $uref and
+                                    .value._loro == 1 or
                                     (
-                                        if (.value._sa != null and .value._su != null) then
-                                            ((.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min) or (.value._su >= $u_med and (.value._su - .value._sa) >= ($d_min * 2)))
-                                        else
-                                            (.value._sim >= $u_med)
-                                        end
+                                        .value._sim >= $umb and .value._sim < $uref and
+                                        (
+                                            if (.value._sa != null and .value._su != null) then
+                                                ((.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min) or (.value._su >= $u_med and (.value._su - .value._sa) >= ($d_min * 2)))
+                                            else
+                                                (.value._sim >= $u_med)
+                                            end
+                                        )
                                     )
                                 )
                             )

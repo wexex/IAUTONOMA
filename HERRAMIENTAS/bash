@@ -206,7 +206,7 @@ if [[ "$1" == "--spec" ]]; then
                 properties: {
                     comando: {
                         type: "string",
-                        description: ("Modulos disponibles (puedes encadenarlos con ;):\n" + $mods)
+                        description: ("Modulos disponibles (escribe directamente el comando y su argumento real, puedes encadenarlos con ;):\n" + ($mods | gsub("# [Mm]odulo: *"; "")))
                     }
                 },
                 required: ["comando"]
@@ -216,7 +216,7 @@ if [[ "$1" == "--spec" ]]; then
     exit 0
 fi
 
-CMD=$(jq -r '.comando // empty' < <(printf '%s' "$1") 2>/dev/null)
+CMD=$(jq -r '(.comando // "") | sub("^#? *[Mm]odulo: *"; "")' < <(printf '%s' "$1") 2>/dev/null)
 
 if grep -qE '(rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\s+(/|/\*|~|\*)|--no-preserve-root|\bmkfs\b|\bdd\s+if=|:\(\)\{:\|:&\};:|chmod\s+-R\s+777\s+/|\b(shutdown|reboot|poweroff)\b|>\s*/dev/(sd|nvme)|&)' < <(printf '%s' "$CMD"); then
     echo "BLOQUEADO: comando de riesgo detectado ($CMD)."

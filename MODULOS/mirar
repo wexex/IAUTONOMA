@@ -1,11 +1,23 @@
 #!/bin/bash
 # Modulo: mirar <ruta> - Lee, mira y muestra lo que pone o contiene dentro un fichero o archivo
 
-
-CONTENIDO(){
-      if [ -d $@ ]; then ls $@
-    elif [ -f $@ ]; then cat $@
+mirar() {
+    ruta_m="$1"
+    ruta_m="${ruta_m#<ruta>/}"
+    ruta_m="${ruta_m#<ruta>}"
+    if [[ -z "$ruta_m" ]]; then
+        echo "Error: indica el fichero o carpeta a mirar"
+    elif [[ -d "$ruta_m" ]]; then
+        ls -la "$ruta_m"
+    elif [[ -f "$ruta_m" ]]; then
+        if [[ -n "$2" ]]; then
+            ini_m="$2"
+            fin_m="${3:-$2}"
+            sed -n "${ini_m},${fin_m}p" "$ruta_m"
+        else
+            cat "$ruta_m"
+        fi
+    else
+        echo "Error: no existe ($ruta_m)"
     fi
 }
-
-mirar() { CONTENIDO "$@"; }

@@ -243,7 +243,7 @@ buscar_y_reforzar_capa() {
                                 mv -f "$DIR_MEMORIA/${part}.$$.tmp" "$DIR_MEMORIA/$part" 2>/dev/null
                                 if [[ "$PUEDE_ASCENDER" == "1" ]]; then
                                     ASCENSO_PER=$(jq -a -c --argjson uper "$UMBRAL_PERSISTENTE" '
-                                        select((.herramienta // 0) == 0 and (((.messages[1].content // "") | startswith("[")) | not) and .embedding != null and ((.embedding | map(. * .) | add | sqrt) >= $uper))
+                                        select((.herramienta // 0) == 0 and (((.messages[1].content // "") | startswith("[")) | not) and (((.messages[0].content // "") | startswith("<<")) | not) and .embedding != null and ((.embedding | map(. * .) | add | sqrt) >= $uper))
                                     ' "$DIR_MEMORIA/$part" 2>/dev/null)
                                     if [[ -n "$ASCENSO_PER" ]]; then
                                         while IFS= read -r lin_per; do
@@ -355,8 +355,9 @@ INSTRUCCIONES_BASE='
 
 INSTRUCCION_AGENTE="\
 $INSTRUCCIONES_BASE
-- Dispones de memoria persistente.
+- Dispones de memoria persistente real: cada turno previo en tu contexto incluye delante su fecha y hora exacta [YYYY-MM-DD HH:MM:SS]. Consulta siempre esos recuerdos y sus marcas de hora; nunca afirmes que careces de memoria o de acceso al sistema.
 - Si el usuario niega, prohibe o corrige un dato previo, omite por completo el elemento negado y usa solo el dato valido actual.
+- Las marcas entre << >> indican tu propio estado biologico (<<Todo esta en silencio>> cuando estuviste sin actividad, <<Te duermes>> cuando te dormiste en esa fecha y hora, y <<Te despiertas>> cuando acabas de despertar junto a la peticion del usuario).
 
 - Usa la herramienta bash y sus modulos cuando sea necesario.
 - Para consultar o listar tus Skills (guias en SKILLS/), ejecuta en bash el comando: skill (o skill <nombre>). Los modulos de bash son comandos, no son skills.
@@ -370,77 +371,114 @@ TEXTO_FINAL=""
 RESPONDI=0
 ULTIMA_LLAMADA_TOOL=""
 
-# Intentos de obtener respuesta
-for (( PASO=1; PASO<=MAX_REINTENTOS; PASO++ )); do
-    JSON_PAYLOAD=$(jq -a --arg sys "$INSTRUCCION_AGENTE" --argjson turno "$MENSAJES_TURNO" --argjson tls "$TOOLS_JSON" --argjson temp "$TEMPERATURA" --argjson rpen "${PENALIZACION_REPETICION:-1.15}" '{
+if [[ "${MODO_INTERNO:-0}" -eq 1 ]]; then
+    INSTRUCCION_INTERNA='
+- Responde en Español de forma concisa en primera persona (yo) y con emojis, sin formato latex ni bloques de codigo.
+- El estimulo recibido entre << >> es tu propia sensacion biologica interna (quien siente el silencio, se aburre, se duerme o se despierta eres TU mismo, no el usuario).
+- Expresa solo tu pensamiento interno ante esta situacion en 1 o 2 frases, sin hacer preguntas al usuario.
+'
+    PAYLOAD_INTERNO=$(jq -a --arg sys "$INSTRUCCION_INTERNA" --argjson turno "$MENSAJES_TURNO" --argjson temp "$TEMPERATURA" --argjson rpen "${PENALIZACION_REPETICION:-1.15}" '{
         messages: (
             [{"role": "system", "content": $sys}] +
             . +
             $turno
         ),
-        tools: $tls,
-        tool_choice: "auto",
         temperature: $temp,
         repeat_penalty: $rpen,
-        stop: ["</parameter></parameter>", "<response>"]
+        stop: ["<tool_call>", "</tool_call>", "</parameter>", "<function=", "<response>"]
     }' < <(echo "$MEMORIA_JSON"))
 
-    # Petición a llama-server
-    RESPUESTA=$(curl -s "$URL" -H "Content-Type: application/json" -d "$JSON_PAYLOAD")
-    if [[ -z "$RESPUESTA" ]]; then RESPUESTA="{}"; fi
+    RESP_INTERNA=$(curl -s "$URL" -H "Content-Type: application/json" -d "$PAYLOAD_INTERNO")
+    if [[ -z "$RESP_INTERNA" ]]; then RESP_INTERNA="{}"; fi
+    TEXTO_FINAL=$(jq -n -r --argjson r "$RESP_INTERNA" '($r.choices[0].message.content // "") | gsub("<[^>]*tool_call[^>]*>|</?parameter[^>]*>|<function=[^>]*>|</?response>"; "")')
+    RESPONDI=1
+else
+    # Intentos de obtener respuesta
+    for (( PASO=1; PASO<=MAX_REINTENTOS; PASO++ )); do
+        JSON_PAYLOAD=$(jq -a --arg sys "$INSTRUCCION_AGENTE" --argjson turno "$MENSAJES_TURNO" --argjson tls "$TOOLS_JSON" --argjson temp "$TEMPERATURA" --argjson rpen "${PENALIZACION_REPETICION:-1.15}" '{
+            messages: (
+                [{"role": "system", "content": $sys}] +
+                . +
+                $turno
+            ),
+            tools: $tls,
+            tool_choice: "auto",
+            temperature: $temp,
+            repeat_penalty: $rpen,
+            stop: ["</parameter></parameter>", "<response>"]
+        }' < <(echo "$MEMORIA_JSON"))
 
-    # Extraer nombre de la herramienta llamada y sus argumentos
-    TOOL_NAME=$(jq -n -r --argjson r "$RESPUESTA" '$r.choices[0].message.tool_calls[0].function.name // empty')
-    TOOL_ARGS=$(jq -n -r --argjson r "$RESPUESTA" '$r.choices[0].message.tool_calls[0].function.arguments // empty')
-    MODULO_USADO=$(jq -n -r --argjson a "$TOOL_ARGS" '$a.comando // empty' 2>/dev/null)
+        # Petición a llama-server
+        RESPUESTA=$(curl -s "$URL" -H "Content-Type: application/json" -d "$JSON_PAYLOAD")
+        if [[ -z "$RESPUESTA" ]]; then RESPUESTA="{}"; fi
 
-    if [[ -n "$TOOL_NAME" ]]; then
-        if [[ "$TOOL_NAME:$MODULO_USADO" == "$ULTIMA_LLAMADA_TOOL" ]]; then
-            break
-        fi
-        ULTIMA_LLAMADA_TOOL="$TOOL_NAME:$MODULO_USADO"
+        # Extraer todas las llamadas a herramientas (soporte de tool_calls paralelas)
+        NUM_TOOLS=$(jq -n -r --argjson r "$RESPUESTA" '($r.choices[0].message.tool_calls // [ ]) | length')
 
-        if [[ -x "$DIR_HERRAMIENTAS/$TOOL_NAME" ]]; then
-            SALIDA_HERRAMIENTA=$(timeout "$TIMEOUT_HERRAMIENTA" "$DIR_HERRAMIENTAS/$TOOL_NAME" "$TOOL_ARGS" 2>/dev/null)
-        else
-            SALIDA_HERRAMIENTA="Error: herramienta no disponible ($TOOL_NAME)"
-        fi
-        if [[ -z "$SALIDA_HERRAMIENTA" ]]; then SALIDA_HERRAMIENTA="(sin salida)"; fi
+        if [[ "$NUM_TOOLS" -gt 0 ]]; then
+            MSG_LLAMADA=$(jq -n -c --argjson r "$RESPUESTA" '$r.choices[0].message')
+            MENSAJES_TURNO=$(jq -a -c --argjson mcall "$MSG_LLAMADA" '. + [$mcall]' < <(echo "$MENSAJES_TURNO"))
+            REPETIDO_DETECTADO=0
+            ULTIMO_MOD_PASO=""
+            ULTIMA_SAL_PASO=""
 
-        ETIQUETAS_TOOLS+="[$TOOL_NAME:$MODULO_USADO]"$'\n'
-        TOOL_ID=$(jq -n -r --argjson r "$RESPUESTA" --arg p "$PASO" '$r.choices[0].message.tool_calls[0].id // ("call_" + $p)')
-        MSG_LLAMADA=$(jq -n -c --argjson r "$RESPUESTA" '$r.choices[0].message')
+            for (( IDX_T=0; IDX_T<NUM_TOOLS; IDX_T++ )); do
+                TOOL_NAME=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_T" '$r.choices[0].message.tool_calls[$i].function.name // empty')
+                TOOL_ARGS=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_T" '$r.choices[0].message.tool_calls[$i].function.arguments // empty')
+                MODULO_USADO=$(jq -n -r --argjson a "$TOOL_ARGS" '$a.comando // empty' 2>/dev/null)
+                TOOL_ID=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_T" --arg p "${PASO}_${IDX_T}" '$r.choices[0].message.tool_calls[$i].id // ("call_" + $p)')
 
-        MENSAJES_TURNO=$(jq -a -c --argjson mcall "$MSG_LLAMADA" --arg tid "$TOOL_ID" --arg tname "$TOOL_NAME" --arg tout "$SALIDA_HERRAMIENTA" '
-            . + [
-                $mcall,
-                {"role": "tool", "tool_call_id": $tid, "name": $tname, "content": $tout}
-            ]
-        ' < <(echo "$MENSAJES_TURNO"))
+                FIRMA_LLAMADA="[$TOOL_NAME:$MODULO_USADO]"
+                if [[ "$ETIQUETAS_TOOLS" == *"$FIRMA_LLAMADA"$'\n'* ]]; then
+                    REPETIDO_DETECTADO=1
+                    SALIDA_HERRAMIENTA="Ya ejecutado anteriormente en este turno."
+                else
+                    if [[ -x "$DIR_HERRAMIENTAS/$TOOL_NAME" ]]; then
+                        SALIDA_HERRAMIENTA=$(timeout "$TIMEOUT_HERRAMIENTA" "$DIR_HERRAMIENTAS/$TOOL_NAME" "$TOOL_ARGS" 2>/dev/null)
+                    else
+                        SALIDA_HERRAMIENTA="Error: herramienta no disponible ($TOOL_NAME)"
+                    fi
+                    if [[ -z "$SALIDA_HERRAMIENTA" ]]; then SALIDA_HERRAMIENTA="(sin salida)"; fi
+                    ETIQUETAS_TOOLS+="$FIRMA_LLAMADA"$'\n'
+                    ULTIMO_MOD_PASO="$MODULO_USADO"
+                    ULTIMA_SAL_PASO="$SALIDA_HERRAMIENTA"
+                fi
 
-        if [[ $PASO -lt $MAX_REINTENTOS ]]; then
-            TEXTO_REENRUTAR="$ENTRADA $MODULO_USADO ${SALIDA_HERRAMIENTA:0:120}"
-            TEXTO_REENRUTAR="${TEXTO_REENRUTAR//$'\r'/ }"
-            TEXTO_REENRUTAR="${TEXTO_REENRUTAR//$'\n'/ }"
-            PAY_RE=$(jq -a -n --arg txt "$TEXTO_REENRUTAR" '{input: $txt}')
-            RESP_RE=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_RE")
-            if [[ -n "$RESP_RE" ]]; then
-                VEC_RE=$(jq -c 'if .data then (.data[0].embedding | map((. * 10000 | round) / 10000)) else null end' < <(echo "$RESP_RE"))
-                if [[ -n "$VEC_RE" ]]; then
-                    if [[ "$VEC_RE" != "null" ]]; then
-                        VEC_CONSULTA="$VEC_RE"
-                        export VEC_CONSULTA
-                        cargar_herramientas "$TEXTO_REENRUTAR"
+                MENSAJES_TURNO=$(jq -a -c --arg tid "$TOOL_ID" --arg tname "$TOOL_NAME" --arg tout "$SALIDA_HERRAMIENTA" '
+                    . + [
+                        {"role": "tool", "tool_call_id": $tid, "name": $tname, "content": $tout}
+                    ]
+                ' < <(echo "$MENSAJES_TURNO"))
+            done
+
+            if [[ $REPETIDO_DETECTADO -eq 1 ]]; then
+                break
+            fi
+
+            if [[ $PASO -lt $MAX_REINTENTOS ]]; then
+                TEXTO_REENRUTAR="$ENTRADA $ULTIMO_MOD_PASO ${ULTIMA_SAL_PASO:0:120}"
+                TEXTO_REENRUTAR="${TEXTO_REENRUTAR//$'\r'/ }"
+                TEXTO_REENRUTAR="${TEXTO_REENRUTAR//$'\n'/ }"
+                PAY_RE=$(jq -a -n --arg txt "$TEXTO_REENRUTAR" '{input: $txt}')
+                RESP_RE=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_RE")
+                if [[ -n "$RESP_RE" ]]; then
+                    VEC_RE=$(jq -c 'if .data then (.data[0].embedding | map((. * 10000 | round) / 10000)) else null end' < <(echo "$RESP_RE"))
+                    if [[ -n "$VEC_RE" ]]; then
+                        if [[ "$VEC_RE" != "null" ]]; then
+                            VEC_CONSULTA="$VEC_RE"
+                            export VEC_CONSULTA
+                            cargar_herramientas "$TEXTO_REENRUTAR"
+                        fi
                     fi
                 fi
             fi
+        else
+            TEXTO_FINAL=$(jq -n -r --argjson r "$RESPUESTA" '($r.choices[0].message.content // "") | gsub("<[^>]*tool_call[^>]*>|</?parameter[^>]*>|<function=[^>]*>|</?response>"; "")')
+            RESPONDI=1
+            break
         fi
-    else
-        TEXTO_FINAL=$(jq -n -r --argjson r "$RESPUESTA" '($r.choices[0].message.content // "") | gsub("<[^>]*tool_call[^>]*>|</?parameter[^>]*>|<function=[^>]*>|</?response>"; "")')
-        RESPONDI=1
-        break
-    fi
-done
+    done
+fi
 
 # Si agoto los reintentos o corto bucle repetido llamando herramientas, forzar respuesta final en texto limpio
 if [[ $RESPONDI -eq 0 ]]; then

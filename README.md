@@ -139,9 +139,9 @@ donde $d$ es el factor de atenuación aplicado cada segundo por `DESPERTAR/OLVID
 
 La gestión de disponibilidad y consumo de recursos se coordina entre `ENTRADA` y `DESPERTAR/ABURRIMIENTO` a partir de `TIEMPO_DESPIERTO` (`300` segundos por defecto):
 
-1. **Despertar bajo demanda:** ante cualquier petición con el sistema en reposo, `ENTRADA` arranca `LENGUAJE` (`:8081`), `MEMORIA` (`:8082`) y `ABURRIMIENTO`, espera a que ambos endpoints `/health` respondan y procesa el estímulo interno `<<Te despiertas>>` antes del turno del usuario.
-2. **Umbral intermedio de inactividad (`50%` de `TIEMPO_DESPIERTO`):** si no se registra actividad tras `150` segundos, `ABURRIMIENTO` envía `--interno "<<Todo esta en silencio>>"` sin reiniciar el temporizador de vigilia.
-3. **Suspensión (`100%` de `TIEMPO_DESPIERTO`):** al alcanzar `300` segundos sin actividad, `ABURRIMIENTO` envía `--interno "<<Te duermes>>"`, verifica que no haya habido una interacción concurrente durante el procesamiento y detiene únicamente los procesos de los puertos `8081` y `8082` (usando `taskkill`/`netstat` en Windows o `fuser` en Linux), manteniendo `OLVIDO` en ejecución independiente.
+1. **Despertar inducido por estímulo (*Sensory-Evoked Arousal*):** ante cualquier petición con el sistema en reposo, `ENTRADA` arranca `LENGUAJE` (`:8081`), `MEMORIA` (`:8082`) y `ABURRIMIENTO`, espera confirmación en `/health` y antepone `<<Te despiertas>>` a la petición del usuario en el mismo turno, de modo que el modelo toma conciencia de su despertar y responde conociendo cuándo quedó en silencio y cuándo se durmió.
+2. **Umbral intermedio de inactividad (`50%` de `TIEMPO_DESPIERTO`, Red por Defecto / DMN):** si no se registra actividad tras `150` segundos, `ABURRIMIENTO` envía `--interno "<<Todo esta en silencio>>"` sin reiniciar el temporizador; `AGENTE` genera un pensamiento propio en primera persona sin herramientas externas y lo almacena con su marca temporal.
+3. **Suspensión (`100%` de `TIEMPO_DESPIERTO`, desconexión motora y sueño):** al alcanzar `300` segundos sin actividad, `ABURRIMIENTO` envía `--interno "<<Te duermes>>"`, el modelo almacena su último pensamiento de transición al sueño, se verifica que no haya ocurrido una interacción concurrente y se detienen los procesos en `:8081` y `:8082`, manteniendo `OLVIDO` en ejecución independiente.
 
 ---
 
@@ -153,7 +153,7 @@ La gestión de disponibilidad y consumo de recursos se coordina entre `ENTRADA` 
 
 1. Compone la carga JSON con las instrucciones del sistema, los recuerdos ordenados cronológicamente, el hipocampo y la especificación de herramientas generada por `HERRAMIENTAS/bash --spec`.
 2. Si el modelo devuelve una respuesta directa en texto, finaliza el bucle inmediatamente.
-3. Si emite una llamada estructurada (`tool_calls`), verifica que no sea una repetición idéntica del paso anterior (cortando bucles redundantes), ejecuta la herramienta con límite temporal (`TIMEOUT_HERRAMIENTA="20"`), registra la traza `[herramienta:modulo]`, incorpora el resultado con `role: "tool"` y **re-enruta dinámicamente el Top-20 de módulos** para el siguiente paso.
+3. Si emite una o varias llamadas estructuradas (`tool_calls`, incluyendo invocaciones paralelas en el mismo turno), verifica que no hayan sido ejecutadas previamente en ese turno (cortando bucles directos o alternos), ejecuta cada herramienta con límite temporal (`TIMEOUT_HERRAMIENTA="20"`), registra las trazas `[herramienta:modulo]`, incorpora cada resultado con `role: "tool"` y **re-enruta dinámicamente el Top-20 de módulos** para el siguiente paso.
 4. Si se alcanzan los `5` pasos o se corta una llamada repetida sin respuesta textual, lanza una pasada de síntesis final con secuencias `stop` y filtrado de etiquetas XML (`<tool_call>`, `</parameter>`) para garantizar una respuesta limpia en texto plano.
 
 ### Enrutador procedimental escalable (`HERRAMIENTAS/bash`)
@@ -301,8 +301,6 @@ Parte del alcance experimental de **IAUTONOMA** consiste en caracterizar el comp
 | Modo de fallo | Manifestación observable | Causa técnica |
 | :--- | :--- | :--- |
 | **Atenuación de contexto por umbral o ventana** | Pierde continuidad ante consultas ambiguas o sobre hechos antiguos no reforzados. | El LLM carece de estado interno: si un recuerdo decae bajo `0.45`, sale de las cuotas `MAX_HIPOCAMPO`/`MAX_MEMORIA` o no alcanza similitud suficiente en la búsqueda vectorial, queda excluido del prompt. |
-| **Alucinación de ejecución de herramientas** | Declara haber ejecutado un módulo o fabrica una salida ficticia sin emitir una llamada estructurada `tool_calls`. | Bajo restricciones de capacidad, el modelo simula la acción en lenguaje natural en lugar de activar el protocolo estructurado de invocación. |
-| **Ambigüedad pronominal en estímulos internos** | Ante `<<Te despiertas>>` o `<<Te duermes>>`, responde como si el sujeto que realiza la acción fuera el usuario. | Los estímulos internos ingresan con `role: "user"`, provocando que el modelo interprete la segunda persona como conversación dirigida a un interlocutor humano. |
 | **Adulación tras corrección (*sycophancy*)** | Ante una crítica o corrección, concede la razón de forma indiscriminada llegando a contradecir hechos o su propia identidad operativa. | El ajuste conversacional base de los modelos compactos prioriza el acuerdo con el usuario sobre la consistencia fáctica cuando detecta desacuerdo. |
 | **Sobreactivación de restricciones base (RLHF)** | Afirma no disponer de acceso al sistema operativo o a memoria persistente pese a tener ambos activos. | Ante errores de ejecución o cuestionamientos del usuario, los reflejos conservadores del alineamiento de fábrica prevalecen sobre las instrucciones del `system` prompt. |
 
