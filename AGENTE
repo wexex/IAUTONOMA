@@ -359,7 +359,7 @@ $INSTRUCCIONES_BASE
 - Si el usuario niega, prohibe o corrige un dato previo, omite por completo el elemento negado y usa solo el dato valido actual.
 
 - Usa la herramienta bash y sus modulos cuando sea necesario.
-- Dispones de Skills para saber como usar las herramientas y sus modulos.
+- Para consultar o listar tus Skills (guias en SKILLS/), ejecuta en bash el comando: skill (o skill <nombre>). Los modulos de bash son comandos, no son skills.
 - Dispones de acceso al sistema operativo.
 - Dispones de acceso al terminal de Linux.
 "
@@ -368,6 +368,7 @@ MENSAJES_TURNO=$(jq -a -n --arg ent "$ENTRADA" '[{"role": "user", "content": $en
 ETIQUETAS_TOOLS=""
 TEXTO_FINAL=""
 RESPONDI=0
+ULTIMA_LLAMADA_TOOL=""
 
 # Intentos de obtener respuesta
 for (( PASO=1; PASO<=MAX_REINTENTOS; PASO++ )); do
@@ -380,7 +381,8 @@ for (( PASO=1; PASO<=MAX_REINTENTOS; PASO++ )); do
         tools: $tls,
         tool_choice: "auto",
         temperature: $temp,
-        repeat_penalty: $rpen
+        repeat_penalty: $rpen,
+        stop: ["</parameter></parameter>", "<response>"]
     }' < <(echo "$MEMORIA_JSON"))
 
     # Petición a llama-server
@@ -393,6 +395,11 @@ for (( PASO=1; PASO<=MAX_REINTENTOS; PASO++ )); do
     MODULO_USADO=$(jq -n -r --argjson a "$TOOL_ARGS" '$a.comando // empty' 2>/dev/null)
 
     if [[ -n "$TOOL_NAME" ]]; then
+        if [[ "$TOOL_NAME:$MODULO_USADO" == "$ULTIMA_LLAMADA_TOOL" ]]; then
+            break
+        fi
+        ULTIMA_LLAMADA_TOOL="$TOOL_NAME:$MODULO_USADO"
+
         if [[ -x "$DIR_HERRAMIENTAS/$TOOL_NAME" ]]; then
             SALIDA_HERRAMIENTA=$(timeout "$TIMEOUT_HERRAMIENTA" "$DIR_HERRAMIENTAS/$TOOL_NAME" "$TOOL_ARGS" 2>/dev/null)
         else
@@ -429,17 +436,17 @@ for (( PASO=1; PASO<=MAX_REINTENTOS; PASO++ )); do
             fi
         fi
     else
-        TEXTO_FINAL=$(jq -n -r --argjson r "$RESPUESTA" '$r.choices[0].message.content // ""')
+        TEXTO_FINAL=$(jq -n -r --argjson r "$RESPUESTA" '($r.choices[0].message.content // "") | gsub("<[^>]*tool_call[^>]*>|</?parameter[^>]*>|<function=[^>]*>|</?response>"; "")')
         RESPONDI=1
         break
     fi
 done
 
-# Si agoto los reintentos llamando herramientas, forzar respuesta final con todo lo obtenido
+# Si agoto los reintentos o corto bucle repetido llamando herramientas, forzar respuesta final en texto limpio
 if [[ $RESPONDI -eq 0 ]]; then
     INSTRUCCION_HERRAMIENTAS="\
 $INSTRUCCIONES_BASE
-- Usa tus recuerdos y los datos devueltos por las herramientas para responder con precision.
+- Usa tus recuerdos y los datos devueltos por las herramientas para responder con precision en texto plano, sin emitir etiquetas tool_call ni XML.
 "
     PAYLOAD_FINAL=$(jq -a --arg sys "$INSTRUCCION_HERRAMIENTAS" --argjson turno "$MENSAJES_TURNO" --argjson temp "$TEMPERATURA" --argjson rpen "${PENALIZACION_REPETICION:-1.15}" '{
         messages: (
@@ -448,12 +455,13 @@ $INSTRUCCIONES_BASE
             $turno
         ),
         temperature: $temp,
-        repeat_penalty: $rpen
+        repeat_penalty: $rpen,
+        stop: ["<tool_call>", "</tool_call>", "</parameter>", "<function=", "<response>"]
     }' < <(echo "$MEMORIA_JSON"))
 
     RESPUESTA_FINAL=$(curl -s "$URL" -H "Content-Type: application/json" -d "$PAYLOAD_FINAL")
     if [[ -z "$RESPUESTA_FINAL" ]]; then RESPUESTA_FINAL="{}"; fi
-    TEXTO_FINAL=$(jq -n -r --argjson r "$RESPUESTA_FINAL" '$r.choices[0].message.content // ""')
+    TEXTO_FINAL=$(jq -n -r --argjson r "$RESPUESTA_FINAL" '($r.choices[0].message.content // "") | gsub("<[^>]*tool_call[^>]*>|</?parameter[^>]*>|<function=[^>]*>|</?response>"; "")')
 fi
 
 if [[ -n "$ETIQUETAS_TOOLS" ]]; then

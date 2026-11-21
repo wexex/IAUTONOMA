@@ -153,8 +153,8 @@ La gestión de disponibilidad y consumo de recursos se coordina entre `ENTRADA` 
 
 1. Compone la carga JSON con las instrucciones del sistema, los recuerdos ordenados cronológicamente, el hipocampo y la especificación de herramientas generada por `HERRAMIENTAS/bash --spec`.
 2. Si el modelo devuelve una respuesta directa en texto, finaliza el bucle inmediatamente.
-3. Si emite una llamada estructurada (`tool_calls`), ejecuta la herramienta con límite temporal (`TIMEOUT_HERRAMIENTA="20"`), registra la traza `[herramienta:modulo]`, incorpora el resultado con `role: "tool"` y **re-enruta dinámicamente el Top-20 de módulos** para el siguiente paso combinando la consulta con el módulo y la salida obtenidos.
-4. Si se alcanzan los `5` pasos sin emitir una respuesta textual, lanza una pasada de síntesis final sin campo `tools` para elaborar la respuesta definitiva con los datos obtenidos.
+3. Si emite una llamada estructurada (`tool_calls`), verifica que no sea una repetición idéntica del paso anterior (cortando bucles redundantes), ejecuta la herramienta con límite temporal (`TIMEOUT_HERRAMIENTA="20"`), registra la traza `[herramienta:modulo]`, incorpora el resultado con `role: "tool"` y **re-enruta dinámicamente el Top-20 de módulos** para el siguiente paso.
+4. Si se alcanzan los `5` pasos o se corta una llamada repetida sin respuesta textual, lanza una pasada de síntesis final con secuencias `stop` y filtrado de etiquetas XML (`<tool_call>`, `</parameter>`) para garantizar una respuesta limpia en texto plano.
 
 ### Enrutador procedimental escalable (`HERRAMIENTAS/bash`)
 
@@ -304,9 +304,7 @@ Parte del alcance experimental de **IAUTONOMA** consiste en caracterizar el comp
 | **Alucinación de ejecución de herramientas** | Declara haber ejecutado un módulo o fabrica una salida ficticia sin emitir una llamada estructurada `tool_calls`. | Bajo restricciones de capacidad, el modelo simula la acción en lenguaje natural en lugar de activar el protocolo estructurado de invocación. |
 | **Ambigüedad pronominal en estímulos internos** | Ante `<<Te despiertas>>` o `<<Te duermes>>`, responde como si el sujeto que realiza la acción fuera el usuario. | Los estímulos internos ingresan con `role: "user"`, provocando que el modelo interprete la segunda persona como conversación dirigida a un interlocutor humano. |
 | **Adulación tras corrección (*sycophancy*)** | Ante una crítica o corrección, concede la razón de forma indiscriminada llegando a contradecir hechos o su propia identidad operativa. | El ajuste conversacional base de los modelos compactos prioriza el acuerdo con el usuario sobre la consistencia fáctica cuando detecta desacuerdo. |
-| **Confusión entre esquema de herramientas y `SKILLS/`** | Enumera los módulos visibles en `tools` denominándolos *skills* en lugar de invocar `bash: skill`. | Interpreta el listado de firmas de módulos inyectado en el esquema de funciones como si correspondiera al contenido del directorio `SKILLS/`. |
 | **Sobreactivación de restricciones base (RLHF)** | Afirma no disponer de acceso al sistema operativo o a memoria persistente pese a tener ambos activos. | Ante errores de ejecución o cuestionamientos del usuario, los reflejos conservadores del alineamiento de fábrica prevalecen sobre las instrucciones del `system` prompt. |
-| **Bucles de generación en etiquetas de invocación** | Emite etiquetas parciales repetitivas (`<tool_call>`, `</parameter>`) hasta agotar el límite `-n 2048`. | Cuando el modelo intenta emitir una llamada fuera del formato estructurado con temperatura `0.001`, el decodificado determinista retroalimenta el token de cierre. |
 
 ### Limitaciones estructurales latentes
 
