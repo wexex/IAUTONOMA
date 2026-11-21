@@ -1,5 +1,5 @@
 #!/bin/bash
-# Modulo: buscar <nombre> [ruta] - Busca ficheros o carpetas por nombre en un directorio
+# Modulo: buscar <nombre> [ruta] - Busca donde esta o en que carpeta se encuentra un fichero o archivo por su nombre
 
 buscar() {
     find "${2:-.}" -maxdepth 3 -name "*$1*"

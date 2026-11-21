@@ -146,7 +146,7 @@ if [[ "$1" == "--spec" ]]; then
                             .[ ] |
                             select(.embedding != null) |
                             . + {sim: ([.embedding, $q] | transpose | map(.[0] * .[1]) | add)}
-                        ] | sort_by(-.sim)[:2][ ].archivo
+                        ] | sort_by(-.sim)[:4][ ].archivo
                     ' "$INDICE_MODULOS" 2>/dev/null)
                     if [[ -n "$PARTS_GANADORAS" ]]; then
                         CANDIDATOS_TMP=""

@@ -152,14 +152,14 @@ La gestión de disponibilidad y consumo de recursos se coordina entre `ENTRADA` 
 
 1. Compone la carga JSON con las instrucciones del sistema, los recuerdos ordenados cronológicamente, el hipocampo y la especificación de herramientas generada por `HERRAMIENTAS/bash --spec`.
 2. Si el modelo devuelve una respuesta directa en texto, finaliza el bucle inmediatamente.
-3. Si emite una llamada estructurada (`tool_calls`), ejecuta la herramienta con límite temporal (`TIMEOUT_HERRAMIENTA="20"`), registra la traza `[herramienta:modulo]` y añade el resultado con `role: "tool"` para el siguiente paso.
+3. Si emite una llamada estructurada (`tool_calls`), ejecuta la herramienta con límite temporal (`TIMEOUT_HERRAMIENTA="20"`), registra la traza `[herramienta:modulo]`, incorpora el resultado con `role: "tool"` y **re-enruta dinámicamente el Top-20 de módulos** para el siguiente paso combinando la consulta con el módulo y la salida obtenidos.
 4. Si se alcanzan los `5` pasos sin emitir una respuesta textual, lanza una pasada de síntesis final sin campo `tools` para elaborar la respuesta definitiva con los datos obtenidos.
 
 ### Enrutador procedimental escalable (`HERRAMIENTAS/bash`)
 
 * **Descubrimiento dinámico:** inspecciona las cabeceras semánticas `# Modulo:` de todos los scripts ubicados en `MODULOS/`.
 * **Indexación incremental por lotes:** cuando el número de módulos supera `MAX_MODULOS` (`20`) y cambia la huella `cksum`, vectoriza únicamente los módulos nuevos en lotes de `50`, los agrupa en particiones por similitud y regenera `MEMORIA/MODULOS/indice.json`.
-* **Selección Top-K con anclaje de `skill`:** en tiempo de consulta reutiliza el vector `VEC_CONSULTA` calculado por `AGENTE`, selecciona las Top-2 particiones y entrega al esquema `tools` los `20` módulos más relevantes garantizando siempre la presencia del módulo `skill` para consultar `SKILLS/`.
+* **Selección Top-K adaptativa y anclaje de `skill`:** en cada paso del bucle agéntico selecciona las Top-4 particiones más afines, filtra los `20` módulos de mayor similitud y garantiza siempre la presencia de `skill` (el cual permite consultar tanto `SKILLS/` como el listado completo de `MODULOS/`).
 
 ### Controles de seguridad y contención
 
@@ -313,7 +313,6 @@ Parte del alcance experimental de **IAUTONOMA** consiste en caracterizar el comp
 
 | Limitación | Impacto potencial | Origen arquitectónico |
 | :--- | :--- | :--- |
-| **Cobertura del enrutador Top-K** | Si el módulo adecuado queda fuera del conjunto seleccionado, el modelo improvisa con una herramienta incorrecta o niega la capacidad. | Mitigado mediante descripciones semánticas completas en cada cabecera `# Modulo:` y la inclusión garantizada del módulo `skill` dentro del cupo `MAX_MODULOS="20"`; aun así, en catálogos muy extensos una consulta excesivamente ambigua puede desplazar un módulo específico fuera del Top-20. |
 | **Frontera entre matiz y divergencia (LTP / LTD)** | Un subtema nuevo muy próximo (`0.45 <= sim < 0.80`) dentro del mismo hilo puede atenuar a `1 h` de vida el recuerdo previo más cercano de la partición. | El sistema evalúa el vector conjunto (entrada + respuesta del modelo) sin listas léxicas; la transición entre reconsolidación (`>= 0.80`) y desplazamiento (`0.45..0.80`) depende exclusivamente de la geometría del embedding. |
 | **Precisión aritmética limitada** | Integra correctamente memoria y salidas de herramientas, pero presenta errores ocasionales en restas de horas o cálculos numéricos simples. | Limitación inherente a la capacidad de razonamiento numérico en modelos de `2B` parámetros cuantizados a `4 bits` (reservado el módulo de cálculo para futura prueba de autoprogramación). |
 

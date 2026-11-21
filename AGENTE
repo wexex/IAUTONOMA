@@ -274,16 +274,21 @@ MEMORIA_JSON=$(jq -a -s '
 ' < <(echo "$RECUERDOS_TURNOS"; echo "$HIPOCAMPO_TURNOS") 2>/dev/null)
 if [[ -z "$MEMORIA_JSON" ]]; then MEMORIA_JSON="[ ]"; fi
 
-# Cargar herramientas reales del directorio y empaquetar JSON con jq
-SPECS=""
-if [[ -d "$DIR_HERRAMIENTAS" ]]; then
-    for ruta in "$DIR_HERRAMIENTAS"/*; do
-        if [[ -f "$ruta" ]]; then
-            SPECS+=$("$ruta" --spec "$ENTRADA" 2>/dev/null)
-        fi
-    done
-fi
-TOOLS_JSON=$(jq -s '.' < <(echo "$SPECS"))
+# Funcion para cargar o re-enrutar dinamicamente las herramientas segun VEC_CONSULTA actual
+cargar_herramientas() {
+    TEXTO_SPEC="$1"
+    SPECS=""
+    if [[ -d "$DIR_HERRAMIENTAS" ]]; then
+        for ruta in "$DIR_HERRAMIENTAS"/*; do
+            if [[ -f "$ruta" ]]; then
+                SPECS+=$("$ruta" --spec "$TEXTO_SPEC" 2>/dev/null)
+            fi
+        done
+    fi
+    TOOLS_JSON=$(jq -s '.' < <(echo "$SPECS"))
+}
+
+cargar_herramientas "$ENTRADA"
 
 INSTRUCCIONES_BASE='
 - Responde en Español de forma concisa de tu a tu y con emojis, sin formato latex.
@@ -333,7 +338,7 @@ for (( PASO=1; PASO<=MAX_REINTENTOS; PASO++ )); do
 
     if [[ -n "$TOOL_NAME" ]]; then
         if [[ -x "$DIR_HERRAMIENTAS/$TOOL_NAME" ]]; then
-            SALIDA_HERRAMIENTA=$(timeout "$TIMEOUT_HERRAMIENTA" "$DIR_HERRAMIENTAS/$TOOL_NAME" "$TOOL_ARGS" 2>&1)
+            SALIDA_HERRAMIENTA=$(timeout "$TIMEOUT_HERRAMIENTA" "$DIR_HERRAMIENTAS/$TOOL_NAME" "$TOOL_ARGS" 2>/dev/null)
         else
             SALIDA_HERRAMIENTA="Error: herramienta no disponible ($TOOL_NAME)"
         fi
@@ -349,6 +354,24 @@ for (( PASO=1; PASO<=MAX_REINTENTOS; PASO++ )); do
                 {"role": "tool", "tool_call_id": $tid, "name": $tname, "content": $tout}
             ]
         ' < <(echo "$MENSAJES_TURNO"))
+
+        if [[ $PASO -lt $MAX_REINTENTOS ]]; then
+            TEXTO_REENRUTAR="$ENTRADA $MODULO_USADO ${SALIDA_HERRAMIENTA:0:120}"
+            TEXTO_REENRUTAR="${TEXTO_REENRUTAR//$'\r'/ }"
+            TEXTO_REENRUTAR="${TEXTO_REENRUTAR//$'\n'/ }"
+            PAY_RE=$(jq -a -n --arg txt "$TEXTO_REENRUTAR" '{input: $txt}')
+            RESP_RE=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_RE")
+            if [[ -n "$RESP_RE" ]]; then
+                VEC_RE=$(jq -c 'if .data then (.data[0].embedding | map((. * 10000 | round) / 10000)) else null end' < <(echo "$RESP_RE"))
+                if [[ -n "$VEC_RE" ]]; then
+                    if [[ "$VEC_RE" != "null" ]]; then
+                        VEC_CONSULTA="$VEC_RE"
+                        export VEC_CONSULTA
+                        cargar_herramientas "$TEXTO_REENRUTAR"
+                    fi
+                fi
+            fi
+        fi
     else
         TEXTO_FINAL=$(jq -n -r --argjson r "$RESPUESTA" '$r.choices[0].message.content // ""')
         RESPONDI=1

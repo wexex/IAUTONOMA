@@ -14,6 +14,8 @@ SINTAXIS DE MODULOS:
   escribir <ruta> [linea_ini] [linea_fin] '<texto>'
   anadir <ruta> '<texto>'
   editar <ruta> '<buscar>' '<reemplazar>'
+  copiar_fichero <origen>
+  copiar_directorio <origen>
   pegar_fichero [destino]
   pegar_directorio [destino]
   mover <origen> <destino>
@@ -21,6 +23,7 @@ SINTAXIS DE MODULOS:
   buscar <nombre> [ruta]
   buscar_texto <texto> [ruta]
   buscar_internet <consulta>
+  subir_github [mensaje]
   meteo_ahora [ciudad]
   meteo_hoy [ciudad]
   meteo_manana [ciudad]

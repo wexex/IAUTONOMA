@@ -1,10 +1,16 @@
 #!/bin/bash
-# Modulo: skill [nombre] - Consulta las guias y manuales de uso en SKILLS (sin nombre lista las skills disponibles)
+# Modulo: skill [nombre] - Consulta guias en SKILLS o lista todas las skills y todos los modulos disponibles
 
 skill() {
     base="$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/SKILLS"
+    base_mod="$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)"
     if [[ -z "$1" ]]; then
+        echo "=== SKILLS DISPONIBLES ==="
         ls -1 "$base"
+        echo "=== TODOS LOS MODULOS ==="
+        grep -rhi "^# Modulo:" "$base_mod" 2>/dev/null
+    elif [[ "${1,,}" == "modulos" ]]; then
+        grep -rhi "^# Modulo:" "$base_mod" 2>/dev/null
     else
         encontrado=0
         for ext in "" ".txt" ".md"; do
