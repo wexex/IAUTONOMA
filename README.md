@@ -1,50 +1,80 @@
 # IAUTONOMA
 
-> **Agente autónomo local construido en 100% Bash puro + `jq` + `llama.cpp`**, con memoria biológica de 3 capas, olvido continuo en tiempo real, ciclo de sueño/vigilia y enrutador vectorial de herramientas.
+**Agente autónomo local implementado íntegramente en Bash y `jq` sobre `llama.cpp`**, con memoria jerárquica de decaimiento continuo, enrutamiento vectorial de herramientas y gestión autónoma del ciclo de vigilia y sueño.
 
-![Bash](https://img.shields.io/badge/Bash-100%25%20Pure-4EAA25?logo=gnubash&logoColor=white)
-![jq](https://img.shields.io/badge/JSON-jq-blue)
-![llama.cpp](https://img.shields.io/badge/LLM-llama.cpp%20local-orange)
-![Local](https://img.shields.io/badge/Privacidad-100%25%20Local-brightgreen)
-
----
-
-## Filosofía del proyecto
-
-**IAUTONOMA** parte de un principio de diseño estricto:
-
-> **El modelo debe ser libre; el código actúa como soporte biológico, nunca como manipulador.**
-
-* **Sin frameworks pesados** (sin Python, LangChain, bases de datos externas ni contenedores): todo el motor cognitivo corre sobre scripts `#!/bin/bash` y `jq`.
-* **Sin condicionales `if` hardcodeados** sobre palabras del usuario para forzar respuestas o herramientas: el recuerdo, el enrutado de módulos y la inhibición por error operan mediante **similitud vectorial** (`Qwen3-Embedding-0.6B`).
-* **Autonomía y eficiencia de recursos:** el sistema despierta automáticamente bajo demanda, percibe el silencio, se duerme al expirar el tiempo de vigilia configurado y mantiene el proceso de olvido corriendo de forma independiente sin consumir GPU.
+![Bash](https://img.shields.io/badge/Bash-Pure%20Shell-4EAA25?logo=gnubash&logoColor=white)
+![jq](https://img.shields.io/badge/Data-jq-007ACC)
+![llama.cpp](https://img.shields.io/badge/Inference-llama.cpp-E67E22)
+![Local-First](https://img.shields.io/badge/Execution-100%25%20Local-2E7D32)
+![Platforms](https://img.shields.io/badge/Platforms-Linux%20%7C%20Windows%20Git%20Bash%20%7C%20Termux-555555)
 
 ---
 
-## Arquitectura general
+## Tabla de contenidos
+
+1. [Resumen ejecutivo](#resumen-ejecutivo)
+2. [Principios de diseño](#principios-de-diseño)
+3. [Arquitectura del sistema](#arquitectura-del-sistema)
+4. [Sistema de memoria jerárquica](#sistema-de-memoria-jerárquica)
+5. [Ciclo de vigilia, inactividad y sueño](#ciclo-de-vigilia-inactividad-y-sueño)
+6. [Motor agéntico, enrutador vectorial y seguridad](#motor-agéntico-enrutador-vectorial-y-seguridad)
+7. [Estructura del repositorio](#estructura-del-repositorio)
+8. [Requisitos e instalación](#requisitos-e-instalación)
+9. [Uso](#uso)
+10. [Configuración](#configuración)
+11. [Catálogo de módulos y extensibilidad](#catálogo-de-módulos-y-extensibilidad)
+12. [Análisis empírico y limitaciones en modelos compactos](#análisis-empírico-y-limitaciones-en-modelos-compactos)
+
+---
+
+## Resumen ejecutivo
+
+**IAUTONOMA** es una arquitectura cognitiva ligera orientada a la ejecución de modelos de lenguaje locales de bajo consumo (`0.6B` a `4B` parámetros cuantizados en formato GGUF) sin dependencias de Python, bases de datos vectoriales externas, contenedores ni frameworks de orquestación.
+
+Todo el sistema —desde la recuperación semántica y el particionamiento por centroides hasta el decaimiento exponencial de recuerdos, la selección de herramientas y el bucle de razonamiento iterativo— opera mediante scripts `#!/bin/bash`, procesamiento JSON con `jq` y peticiones HTTP locales contra instancias de `llama-server`.
+
+Sus capacidades principales incluyen:
+
+* **Memoria jerárquica en tres capas temporales más índice procedimental:** hipocampo de corto plazo, memoria episódica particionada y memoria persistente con promoción automática y olvido exponencial en tiempo real.
+* **Inhibición semántica no destructiva:** atenuación gradual de recuerdos erróneos detectados por similitud vectorial ante correcciones del usuario.
+* **Enrutamiento vectorial escalable de módulos:** indexación incremental con verificación por `cksum` y selección Top-K para escalar el catálogo de herramientas sin saturar la ventana de contexto.
+* **Gestión autónoma de recursos:** arranque bajo demanda de los servidores de lenguaje y embeddings, percepción temporal de inactividad y suspensión automática con liberación de memoria GPU/RAM.
+
+---
+
+## Principios de diseño
+
+1. **Separación entre cognición y soporte operativo:** el código proporciona memoria, contexto temporal y herramientas ejecutables, pero no impone respuestas predefinidas ni intercepta el lenguaje natural mediante reglas condicionales fijas.
+2. **Enrutamiento puramente semántico:** la recuperación de recuerdos, la consolidación, el filtrado de módulos y la inhibición por corrección se calculan exclusivamente por similitud vectorial (`Qwen3-Embedding-0.6B`, `1024` dimensiones).
+3. **Minimalismo e inspeccionabilidad:** toda la memoria y los registros se persisten en texto plano y JSON Lines (JSONL) con escritura atómica (`*.$$.tmp`), facilitando la auditoría directa sin herramientas propietarias.
+4. **Operación local y eficiencia de hardware:** el modelo de lenguaje corre acelerado en GPU con caché KV cuantizada (`q8_0`) y Flash Attention, mientras que el modelo de embeddings corre en CPU (`-ngl 0`) para no competir por VRAM, y el proceso de olvido opera sin requerir ningún servidor LLM activo.
+
+---
+
+## Arquitectura del sistema
 
 ```mermaid
 flowchart TD
-    U["Usuario (CHAT / CLI)"] --> E["ENTRADA"]
+    U["Usuario (CHAT / CLI)"] --> E["ENTRADA (Orquestador)"]
 
-    subgraph Ciclo["Ciclo Biológico (DESPERTAR/)"]
-        L["LENGUAJE :8081<br/>Qwen3.5-2B (GGUF)"]
-        M["MEMORIA :8082<br/>Qwen3-Embedding-0.6B"]
-        AB["ABURRIMIENTO<br/>Silencio -> Sueño"]
-        OL["OLVIDO<br/>Decaimiento continuo"]
+    subgraph Ciclo["Servicios y Ciclo de Vida (DESPERTAR/)"]
+        L["LENGUAJE :8081<br/>llama-server Chat (GPU)"]
+        M["MEMORIA :8082<br/>llama-server Embeddings (CPU)"]
+        AB["ABURRIMIENTO<br/>Monitor de inactividad y sueño"]
+        OL["OLVIDO<br/>Decaimiento exponencial + Monitor TUI"]
     end
 
-    E -- "Despierta si dormido" --> L
-    E -- "Despierta si dormido" --> M
-    E -- "Reinicia vigilia" --> AB
-    E -- "Inhibición semántica" --> MEM
-    E --> A["AGENTE<br/>Bucle ReAct (hasta 5 pasos)"]
+    E -->|"Arranque bajo demanda"| L
+    E -->|"Arranque bajo demanda"| M
+    E -->|"Actualiza actividad"| AB
+    E -->|"Inhibición semántica"| MEM
+    E --> A["AGENTE<br/>Recuperación + Bucle iterativo (hasta 5 pasos)"]
 
-    subgraph MEM["MEMORIA/ (3 Capas + Procedimental)"]
-        H["hipocampo.json<br/>Presente (24h)"]
-        EP["episodica_*.json<br/>Medio plazo (7d)"]
-        PE["persistente_*.json<br/>Largo plazo (1 año)"]
-        PM["MODULOS/indice.json<br/>Router Top-20"]
+    subgraph MEM["Almacenamiento Vectorial (MEMORIA/)"]
+        H["hipocampo.json<br/>Corto plazo (24 h)"]
+        EP["episodica_*.json + índice<br/>Medio plazo (7 días)"]
+        PE["persistente_*.json + índice<br/>Largo plazo (365 días)"]
+        PM["MODULOS/indice.json<br/>Enrutador procedimental (Top-20)"]
     end
 
     A <--> L
@@ -52,137 +82,234 @@ flowchart TD
     A <--> H
     A <--> EP
     A <--> PE
-    A --> B["HERRAMIENTAS/bash"]
+    A --> B["HERRAMIENTAS/bash<br/>Router Top-20 + Ejecutor aislado"]
     B <--> PM
-    B --> MOD["MODULOS/ (28 módulos Bash)"]
-    MOD --> SK["SKILLS/"]
+    B --> MOD["MODULOS/<br/>28 ficheros / 30 comandos Bash"]
+    MOD --> SK["SKILLS/<br/>Documentación operativa bajo demanda"]
 
-    E -- "Consolida + Refuerza" --> MEM
-    OL -. "Degrada y poda < 0.45" .-> H
-    OL -. "Degrada y poda < 0.45" .-> EP
-    OL -. "Degrada y poda < 0.45" .-> PE
+    E -->|"Consolidación y refuerzo"| MEM
+    OL -.->|"Decaimiento y poda (< 0.45)"| H
+    OL -.->|"Decaimiento y poda (< 0.45)"| EP
+    OL -.->|"Decaimiento y poda (< 0.45)"| PE
 ```
 
+### Flujo de una interacción
+
+1. **Recepción y vigilia (`ENTRADA`):** registra la marca temporal de actividad. Si los servicios en `:8081` o `:8082` están detenidos, los inicia en segundo plano con `setsid`, espera confirmación HTTP 200 en `/health`, verifica `ABURRIMIENTO` y envía el estímulo interno `<<Te despiertas>>` antes de atender la consulta.
+2. **Inhibición semántica previa (`ENTRADA`):** evalúa la similitud de la entrada frente a `CONCEPTO_CASTIGO`. Si supera `UMBRAL_CASTIGO` (`0.58`), atenúa el último turno del hipocampo y sus recuerdos equivalentes en capas superiores.
+3. **Recuperación y razonamiento (`AGENTE`):** vectoriza la consulta (anclándola al último turno del hipocampo si tiene menos de `25` caracteres), recupera recuerdos relevantes, solicita a `HERRAMIENTAS/bash --spec` los módulos más afines y ejecuta el bucle agéntico contra `LENGUAJE`.
+4. **Consolidación y registro (`ENTRADA`):** vectoriza el par interacción-respuesta con fecha exacta (`YYYY-MM-DD HH:MM:SS`), actualiza el hipocampo, consolida en episódica, promueve a persistente si corresponde y anexa el registro completo en `REGISTROS/historial.log`.
+
 ---
 
-## Sistema de memoria biológica
+## Sistema de memoria jerárquica
 
-Cada interacción se vectoriza (`1024` dimensiones) con fecha y hora exacta (`YYYY-MM-DD HH:MM:SS`) y peso inicial `0.85` (`PESO_INICIAL`). La fuerza de cada recuerdo es la **norma L2 de su vector**.
+Cada recuerdo se almacena como un objeto JSON con marca temporal, mensajes `user`/`assistant` y su embedding de `1024` dimensiones escalado inicialmente a una norma L2 de `PESO_INICIAL` (`0.85`). La **norma L2 del vector** representa de forma directa la intensidad o vitalidad del recuerdo.
 
-| Capa | Archivos | Capacidad / Límite | Decaimiento | Función |
+| Capa | Ficheros | Capacidad / Límite | Horizonte de decaimiento | Función |
 | :--- | :--- | :--- | :--- | :--- |
-| **Hipocampo** | `MEMORIA/hipocampo.json` | Últimos `6` turnos vivos | `24h` | Mantiene el hilo del momento presente y ancla frases cortas (`< 25` caracteres). |
-| **Episódica** | `episodica_*.json` + `indice_episodica.json` | Particiones temáticas (`100` líneas/cajón) | `7 días` (`24*7`) | Recuerdos recientes organizados por centroides normalizados (búsqueda Top-2). |
-| **Persistente** | `persistente_*.json` + `indice_persistente.json` | Particiones temáticas (`100` líneas/cajón) | `1 año` (`24*365`) | Neocorteza: recuerdos repetidos o consultados con frecuencia que alcanzan norma `>= 0.99`. |
-| **Procedimental** | `MEMORIA/MODULOS/` | Top-`20` módulos por consulta | No decae | Índice vectorial con huella `cksum` para escalar a cientos de módulos sin saturar el prompt. |
+| **Hipocampo** | `MEMORIA/hipocampo.json` | Últimos `2` turnos activos (`MAX_HIPOCAMPO`) | `24 horas` | Preserva el contexto inmediato y ancla entradas breves (`< 25` caracteres). |
+| **Episódica** | `episodica_*.json` + `indice_episodica.json` | Particiones temáticas (`100` líneas por partición) | `7 días` (`24*7` h) | Almacena recuerdos de medio plazo indexados por centroides unitarios (búsqueda Top-2). |
+| **Persistente** | `persistente_*.json` + `indice_persistente.json` | Particiones temáticas (`100` líneas por partición) | `1 año` (`24*365` h) | Consolida recuerdos recurrentes promovidos automáticamente al alcanzar norma `>= 0.99`. |
+| **Procedimental** | `MEMORIA/MODULOS/indice.json` + `modulos_*.json` | Top-`20` módulos por consulta (`MAX_MODULOS`) | Sin decaimiento | Enrutador vectorial de módulos con reindexación automática mediante huella `cksum`. |
 
-### Dinámicas de aprendizaje y olvido
-* **Consolidación sin duplicados (`>= 0.80`):** si entra un recuerdo muy similar a otro del mismo cajón, lo fusiona actualizando su fecha y refuerza su norma (`× 1.10`, tope `1.0`).
-* **Ascenso automático (`>= 0.99`):** cuando un recuerdo de `episodica` alcanza `0.99` (por repetición en `ENTRADA` o por rescate en `AGENTE`), asciende automáticamente a `persistente`.
-* **Inhibición natural por castigo (`DECAIMIENTO_CASTIGO`):** si la entrada del usuario coincide vectorialmente (`>= 0.58`) con `CONCEPTO_CASTIGO`, no elimina el recuerdo de forma brusca: rebaja el último turno del hipocampo y sus equivalentes en episódica/persistente a la norma exacta equivalente a **`1 hora` de vida restante** antes de caer bajo `0.45`.
-* **Olvido continuo (`DESPERTAR/OLVIDO`):** corre de forma independiente (incluso con los servidores LLM apagados), multiplica los vectores cada segundo por su factor exponencial, elimina cajones vacíos de sus índices y ofrece un visor en tiempo real.
+### Mecánicas de consolidación, refuerzo y decaimiento
 
----
+* **Decaimiento exponencial continuo (`DESPERTAR/OLVIDO`):** cada segundo multiplica las componentes de cada vector por su factor de atenuación y elimina toda entrada cuya norma L2 caiga por debajo de `UMBRAL_SIM` (`0.45`). Cuando una partición queda vacía, `OLVIDO` elimina el archivo del disco y purga su referencia en el índice. Incluye un monitor de terminal en tiempo real con barras de vitalidad por capa y registro de elementos purgados.
+* **Consolidación sin duplicados y refuerzo:** al guardar en una partición temática, si existe un recuerdo previo con similitud coseno `>= UMBRAL_REFUERZO` (`0.80`), se fusiona actualizando contenido y fecha, y se refuerza su norma multiplicándola por `FACTOR_REFUERZO` (`1.10`, acotada a `1.0`). El mismo refuerzo se aplica al recuerdo ganador durante la recuperación en `AGENTE`.
+* **Promoción automática a largo plazo:** cualquier recuerdo de la capa episódica que alcance o supere `UMBRAL_PERSISTENTE` (`0.99`) —ya sea por repetición o por consulta frecuente— se promueve automáticamente a la capa persistente.
+* **Equilibrio en la recuperación (`AGENTE`):** las consultas recuperan hasta `MAX_MEMORIA` (`2`) recuerdos adicionales al hipocampo, limitando a `MAX_MEM_HERRAMIENTA` (`1`) el número de recuerdos procedentes de salidas previas de herramientas para evitar la saturación del contexto con datos volátiles. Todos los recuerdos inyectados incluyen el prefijo `[YYYY-MM-DD HH:MM:SS]`.
+* **Inhibición semántica por corrección (`DECAIMIENTO_CASTIGO`):** cuando la entrada del usuario presenta una similitud `>= 0.58` frente a `CONCEPTO_CASTIGO`, el sistema no destruye el historial inmediatamente; recalcula la norma objetivo equivalente a `1 hora` de vida residual antes del umbral `0.45` y atenúa el último turno del hipocampo y sus equivalentes (`>= 0.80`) en episódica y persistente, delegando su desaparición progresiva a `OLVIDO`.
 
-## Ciclo de vigilia, silencio y sueño
+### Formulación matemática
 
-Gestionado entre `ENTRADA` y `DESPERTAR/ABURRIMIENTO` según `TIEMPO_DESPIERTO` (`5*60` segundos por defecto):
+Siendo $u$ el umbral de poda (`UMBRAL_SIM = 0.45`), $p_0$ la norma de referencia (`PESO_INICIAL = 0.85` en hipocampo/episódica y `1.0` en persistente), $T$ el horizonte de decaimiento de la capa y $t_c$ la vida residual tras inhibición (`DECAIMIENTO_CASTIGO = 1 h`):
 
-1. **Despertar automático:** al enviar un mensaje con el sistema dormido, `ENTRADA` arranca `LENGUAJE` (`8081`), `MEMORIA` (`8082`) y `ABURRIMIENTO`, y envía el estímulo interno `<<Te despiertas>>` antes de procesar el turno del usuario.
-2. **Percepción de silencio:** al alcanzar la mitad de `TIEMPO_DESPIERTO` sin actividad, `ABURRIMIENTO` envía `--interno "<<Todo esta en silencio>>"` sin reiniciar el temporizador.
-3. **Sueño:** al cumplirse `TIEMPO_DESPIERTO`, envía `--interno "<<Te duermes>>"`, verifica que no haya habido una nueva interacción durante ese instante y detiene los procesos en los puertos `8081` y `8082` (manteniendo `OLVIDO` activo).
+$$d = \exp\left(\frac{\ln(u / p_0)}{T_{\text{seg}}}\right), \qquad n_{\text{obj}} = u \cdot \exp\left(\ln\left(\frac{p_0}{u}\right) \cdot \frac{t_c}{T_{\text{horas}}}\right)$$
 
----
-
-## Bucle agéntico y herramientas
-
-`AGENTE` implementa un bucle `for` de hasta `MAX_REINTENTOS="5"` pasos por turno:
-1. Construye el contexto (`hipocampo` + Top-2 recuerdos de `persistente` y `episodica` prefijados con `[YYYY-MM-DD HH:MM:SS]`).
-2. `HERRAMIENTAS/bash --spec` selecciona vectorialmente los Top-`20` módulos más relevantes para la consulta y los entrega en el campo `tools`.
-3. Si el modelo invoca `bash`, se filtran comandos destructivos, se ejecuta en un subshell aislado (`TIMEOUT_HERRAMIENTA="20"`) cargando `MODULOS/*`, y se devuelve la salida en formato nativo `role: "tool"`.
-4. El modelo evalúa el resultado real y decide libremente si ya puede responder (`break`), si reintenta con otro módulo o si encadena un nuevo paso.
+donde $d$ es el factor de atenuación aplicado cada segundo por `DESPERTAR/OLVIDO` y $n_{\text{obj}}$ es la norma L2 a la que se reduce un recuerdo cuando se activa la inhibición semántica.
 
 ---
 
-## Estructura del proyecto
+## Ciclo de vigilia, inactividad y sueño
+
+La gestión de disponibilidad y consumo de recursos se coordina entre `ENTRADA` y `DESPERTAR/ABURRIMIENTO` a partir de `TIEMPO_DESPIERTO` (`300` segundos por defecto):
+
+1. **Despertar bajo demanda:** ante cualquier petición con el sistema en reposo, `ENTRADA` arranca `LENGUAJE` (`:8081`), `MEMORIA` (`:8082`) y `ABURRIMIENTO`, espera a que ambos endpoints `/health` respondan y procesa el estímulo interno `<<Te despiertas>>` antes del turno del usuario.
+2. **Umbral intermedio de inactividad (`50%` de `TIEMPO_DESPIERTO`):** si no se registra actividad tras `150` segundos, `ABURRIMIENTO` envía `--interno "<<Todo esta en silencio>>"` sin reiniciar el temporizador de vigilia.
+3. **Suspensión (`100%` de `TIEMPO_DESPIERTO`):** al alcanzar `300` segundos sin actividad, `ABURRIMIENTO` envía `--interno "<<Te duermes>>"`, verifica que no haya habido una interacción concurrente durante el procesamiento y detiene únicamente los procesos de los puertos `8081` y `8082` (usando `taskkill`/`netstat` en Windows o `fuser` en Linux), manteniendo `OLVIDO` en ejecución independiente.
+
+---
+
+## Motor agéntico, enrutador vectorial y seguridad
+
+### Bucle iterativo (`AGENTE`)
+
+`AGENTE` ejecuta un bucle de hasta `MAX_REINTENTOS` (`5`) pasos por turno con `TEMPERATURA="0.001"` y `tool_choice: "auto"`:
+
+1. Compone la carga JSON con las instrucciones del sistema, los recuerdos ordenados cronológicamente, el hipocampo y la especificación de herramientas generada por `HERRAMIENTAS/bash --spec`.
+2. Si el modelo devuelve una respuesta directa en texto, finaliza el bucle inmediatamente.
+3. Si emite una llamada estructurada (`tool_calls`), ejecuta la herramienta con límite temporal (`TIMEOUT_HERRAMIENTA="20"`), registra la traza `[herramienta:modulo]` y añade el resultado con `role: "tool"` para el siguiente paso.
+4. Si se alcanzan los `5` pasos sin emitir una respuesta textual, lanza una pasada de síntesis final sin campo `tools` para elaborar la respuesta definitiva con los datos obtenidos.
+
+### Enrutador procedimental escalable (`HERRAMIENTAS/bash`)
+
+* **Descubrimiento dinámico:** inspecciona las cabeceras `# Modulo:` de todos los scripts ubicados en `MODULOS/`.
+* **Indexación incremental por lotes:** cuando el número de módulos supera `MAX_MODULOS` (`20`) y cambia la huella `cksum`, vectoriza únicamente los módulos nuevos en lotes de `50`, los agrupa en particiones por similitud y regenera `MEMORIA/MODULOS/indice.json`.
+* **Selección Top-K:** en tiempo de consulta reutiliza el vector `VEC_CONSULTA` calculado por `AGENTE`, selecciona las Top-2 particiones y entrega al esquema `tools` los `20` módulos más relevantes.
+
+### Controles de seguridad y contención
+
+Antes de ejecutar cualquier instrucción en el subshell aislado, `HERRAMIENTAS/bash` aplica las siguientes medidas:
+
+* **Bloqueo preventivo de comandos destructivos:** rechaza patrones de borrado recursivo crítico (`rm -rf` sobre `/`, `/*`, `~`, `*`, `--no-preserve-root`), formateo o escritura directa en dispositivos (`mkfs`, `dd if=`, redirección a `/dev/sd*` o `/dev/nvme*`), bombas fork, cambios masivos de permisos (`chmod -R 777 /`), comandos de apagado/reinicio (`shutdown`, `reboot`, `poweroff`) y ejecución en segundo plano mediante `&`.
+* **Aislamiento y acotación de recursos:** cada invocación se ejecuta en una instancia `bash -c` aislada con límite de tiempo (`20` segundos) y truncado estricto de salida a `4000` bytes (`head -c 4000`) para proteger la ventana de contexto (`4096` tokens).
+
+---
+
+## Estructura del repositorio
 
 ```text
 IAUTONOMA/
-├── CONFIG                  # Configuración centralizada (modelos, puertos, umbrales, tiempos)
-├── CHAT                    # Interfaz interactiva de terminal (historial con flechas, q para salir)
-├── ENTRADA                 # Orquestador: despertar, inhibición por castigo, memoria y logs
-├── AGENTE                  # Motor LLM + recuperación vectorial + bucle de reintentos (ReAct)
+├── CONFIG                  # Configuración centralizada (modelos, puertos, umbrales y tiempos)
+├── CHAT                    # Interfaz conversacional de terminal con historial
+├── ENTRADA                 # Orquestador principal: vigilia, inhibición, consolidación y logs
+├── AGENTE                  # Motor de inferencia, recuperación vectorial y bucle iterativo
 ├── DESPERTAR/
-│   ├── LENGUAJE            # Servidor llama-server para chat (:8081)
-│   ├── MEMORIA             # Servidor llama-server para embeddings (:8082)
-│   ├── OLVIDO              # Demonio de decaimiento continuo + visor en tiempo real
-│   └── ABURRIMIENTO        # Vigilia automática (silencio -> sueño -> apagado :8081/:8082)
+│   ├── LENGUAJE            # Lanzador llama-server para chat (:8081, GPU, KV-cache q8_0)
+│   ├── MEMORIA             # Lanzador llama-server para embeddings (:8082, CPU)
+│   ├── ABURRIMIENTO        # Gestor automático del ciclo de silencio y suspensión
+│   └── OLVIDO              # Demonio de decaimiento exponencial continuo y monitor TUI
 ├── HERRAMIENTAS/
-│   └── bash                # Router vectorial de módulos (--spec) y ejecutor seguro en jq puro
-├── MODULOS/                # 28 módulos Bash cargados dinámicamente
+│   └── bash                # Enrutador vectorial de módulos (--spec) y ejecutor controlado
+├── MODULOS/                # 28 scripts Bash (30 comandos) cargados dinámicamente
 ├── SKILLS/
-│   └── tareas_bash.txt     # Guías bajo demanda consultables mediante el módulo skill
-├── MEMORIA/                # (Ignorado en Git) Capas JSON, índices y caché vectorial
-└── REGISTROS/              # (Ignorado en Git) historial.log, server.log y estado de vigilia
+│   └── tareas_bash.txt     # Guías operativas consultables bajo demanda mediante el módulo skill
+├── MEMORIA/                # (Generado en ejecución, excluido de Git) Capas JSON e índices
+└── REGISTROS/              # (Generado en ejecución, excluido de Git) Logs y estado de vigilia
 ```
 
 ---
 
-## Requisitos e inicio rápido
+## Requisitos e instalación
 
-### Requisitos
-* **Entorno:** Bash (`>= 4`, Linux / Termux / Windows con Git Bash o MSYS2).
-* **Utilidades CLI:** `jq`, `curl`, `awk`, `sed`, `grep`, `timeout`, `setsid`, `git`.
-* **Motor local:** [`llama-server`](https://github.com/ggml-org/llama.cpp) disponible en el `PATH`.
-* **Modelos GGUF** en `../MODELO/` (configurables en `CONFIG`):
-  * Lenguaje por defecto: `Qwen3.5-2B-Q4_K_M.gguf` *(compatible también con `4B`, `1.7B`, `0.8B` y `0.6B`)*.
-  * Embeddings: `Qwen3-Embedding-0.6B-Q8_0.gguf`.
+### Requisitos del sistema
 
-### Uso básico
+* **Intérprete:** Bash `>= 4.0` (Linux, Termux en Android o Windows mediante Git Bash / MSYS2).
+* **Utilidades estándar:** `jq`, `curl`, `awk`, `sed`, `grep`, `cksum`, `timeout`, `setsid`, `git`.
+* **Motor de inferencia local:** [`llama-server`](https://github.com/ggml-org/llama.cpp) accesible en el `PATH`.
+* **Modelos GGUF** ubicados por defecto en `../MODELO/` respecto a la raíz del repositorio (ruta modificable en `CONFIG`):
+  * **Lenguaje (por defecto):** `Qwen3.5-2B-Q4_K_M.gguf` *(también validado con variantes `Qwen3.5-4B`, `Qwen3-1.7B`, `Qwen3.5-0.8B` y `Qwen3-0.6B`)*.
+  * **Embeddings:** `Qwen3-Embedding-0.6B-Q8_0.gguf`.
+
+### Instalación
 
 ```bash
-# 1. Chat interactivo (despierta LENGUAJE, MEMORIA y ABURRIMIENTO automáticamente al primer mensaje)
+git clone https://github.com/wexex/IAUTONOMA.git
+cd IAUTONOMA
+chmod +x CHAT ENTRADA AGENTE DESPERTAR/* HERRAMIENTAS/* MODULOS/*
+```
+
+Asegúrate de disponer de los modelos GGUF en `../MODELO/` o actualiza las variables `MODELO` y `MODELO_MEMORIA` en `CONFIG`.
+
+---
+
+## Uso
+
+```bash
+# 1. Iniciar sesión interactiva (despierta LENGUAJE, MEMORIA y ABURRIMIENTO al primer mensaje)
 ./CHAT
 
-# 2. Consulta directa desde terminal o scripts
-./ENTRADA "Tu pregunta aqui"
+# 2. Ejecutar una consulta puntual desde terminal o integrarla en otros scripts
+./ENTRADA "Resume el estado actual de la maquina"
 
-# 3. Visor y decaimiento continuo de memoria (terminal aparte, opcional)
+# 3. Iniciar el proceso de olvido continuo y su monitor en tiempo real (terminal independiente)
 ./DESPERTAR/OLVIDO
 ```
 
-> [!WARNING]
-> No ejecutes `AGENTE`, `HERRAMIENTAS/` ni `MODULOS/` de forma aislada. Utiliza siempre `./CHAT` o `./ENTRADA` para que se gestionen correctamente el despertar automático, la consolidación, la inhibición por castigo y los registros.
+> [!IMPORTANT]
+> Utiliza siempre `./CHAT` o `./ENTRADA` como puntos de acceso al sistema. Invocar `AGENTE`, `HERRAMIENTAS/bash` o los scripts de `MODULOS/` de forma aislada omite el despertar automático de servicios, la inhibición semántica, la consolidación de memoria y la persistencia en el historial.
 
 ---
 
-## Módulos incluidos (`MODULOS/`)
+## Configuración
 
-| Categoría | Módulos |
-| :--- | :--- |
-| **Sistema y archivos** | `ruta`, `listar`, `identificar`, `mirar`, `crear_directorio` (`crear_dir`), `crear_fichero`, `escribir`, `anadir`, `editar`, `copiar_fichero`, `copiar_directorio`, `pegar_fichero`, `pegar_directorio`, `mover`, `renombrar`, `buscar`, `buscar_texto` |
-| **Entorno y tiempo** | `fecha`, `hora`, `maquina` |
-| **Red y proyectos** | `buscar_internet`, `subir_github` |
-| **Meteorología** | `meteo_ahora`, `meteo_hoy`, `meteo_manana`, `meteo_ayer`, `meteo_semana`, `meteo_estacion` |
-| **Guías** | `skill` *(sin argumento lista el contenido de `SKILLS/`)* |
+Todos los parámetros operativos se centralizan en `CONFIG`:
 
----
-
-## Diagnóstico técnico: Patologías observadas en modelos compactos (`2B Q4`)
-
-Parte del desarrollo consiste en documentar el comportamiento real de LLMs compactos (`2B` cuantizados) acoplados a memoria persistente y herramientas. A continuación se resumen las patologías observadas y latentes registradas durante las pruebas:
-
-| Patología | Síntoma | Causa raíz |
+| Variable | Valor por defecto | Descripción |
 | :--- | :--- | :--- |
-| **Síndrome del loro / elefante rosa** | Repite literal respuestas pasadas o reproduce un dato erróneo al leer una negación sobre él. | Modelo `2B Q4` + `TEMPERATURA="0.001"` favorece copiar patrones presentes en contexto; las negaciones fijan la atención en el dato mencionado. |
-| **Memoria de pez** | Pierde el hilo de recuerdos antiguos o ante consultas ambiguas. | El LLM es *stateless*: si un recuerdo cae bajo `0.45`, sale del límite `MAX_HIPOCAMPO`/`MAX_MEMORIA` o el embedding no alcanza similitud, deja de entrar al prompt. |
-| **Fosilización de datos efímeros** | Devuelve una hora, clima o ruta antigua como actual sin llamar a `bash`. | Datos volátiles repetidos superan `0.99`, ascienden a `persistente` (1 año) y el `2B` los confunde con el presente pese a la marca de fecha. |
-| **Herramienta fantasma** | Asegura haber ejecutado un módulo o inventa su salida (`/home/usuario`) sin emitir `tool_calls`. | El modelo compacto simula en texto la acción en vez de disparar la llamada estructurada. |
-| **Espejo Yo/Tú** | Ante `<<Te duermes>>` o `<<Te despiertas>>` interpreta que quien duerme o despierta es el usuario. | Los estímulos internos entran con `role: "user"` y el modelo interpreta la segunda persona como conversación humana. |
-| **Complacencia ciega / Delirio de identidad** | Al corregirlo da la razón a toda costa (llegando a negar su naturaleza de IA). | Alineamiento conversacional (*sycophancy*) que prioriza agradar tras una corrección sobre la coherencia fáctica. |
-| **Confusión Módulos vs Skills** | Lista los módulos de `tools` llamándolos *skills* en lugar de ejecutar `bash: skill`. | Interpreta la lista de módulos del esquema `tools` como si ya fuera el contenido de `SKILLS/`. |
-| **Bloqueo RLHF de fábrica** | Afirma no tener acceso al sistema operativo ni memoria persistente. | Ante errores o reproches, el reflejo de seguridad del modelo base se impone sobre el `system` prompt. |
-| **Tartamudeo XML** | Emite etiquetas rotas (`<tool_call>`, `</parameter>` en bucle) hasta agotar `-n 2048`. | Al intentar invocar una herramienta en texto libre con temperatura `0.001`, el token de cierre se retroalimenta. |
-| **Punto ciego del router** *(latente)* | Improvisa con un módulo erróneo si el correcto no entra al prompt. | Con `28` módulos y `MAX_MODULOS="20"`, consultas muy abstractas pueden dejar el módulo adecuado fuera del Top-20. |
-| **Castigo ciego / Falso castigo** *(latente)* | Rebaja un recuerdo sano al hablar de errores de código, o no alcanza fallos de hace `> 1` turno. | `DECAIMIENTO_CASTIGO` se activa por similitud (`0.58`) contra `CONCEPTO_CASTIGO` y actúa sobre el último turno del hipocampo. |
-| **Aritmética frágil** *(latente)* | Cruza bien recuerdos y herramientas pero falla restas simples de horas o cantidades. | Limitación numérica inherente a un modelo `2B` cuantizado `Q4`. |
+| `MODELO` | `../MODELO/Qwen3.5-2B-Q4_K_M.gguf` | Ruta al modelo GGUF de generación conversacional. |
+| `MODELO_MEMORIA` | `../MODELO/Qwen3-Embedding-0.6B-Q8_0.gguf` | Ruta al modelo GGUF de embeddings (`1024` dimensiones). |
+| `PUERTO` / `PUERTO_MEMORIA` | `8081` / `8082` | Puertos locales para los servicios `LENGUAJE` y `MEMORIA`. |
+| `TEMPERATURA` | `0.001` | Temperatura de muestreo para máxima reproducibilidad en llamadas a herramientas. |
+| `PESO_INICIAL` | `0.85` | Norma L2 asignada a cada recuerdo recién consolidado. |
+| `UMBRAL_SIM` | `0.45` | Umbral mínimo de similitud de recuperación y corte de poda en `OLVIDO`. |
+| `UMBRAL_REFUERZO` | `0.80` | Similitud mínima para fusionar un recuerdo duplicado y reforzar su norma. |
+| `FACTOR_REFUERZO` | `1.10` | Multiplicador aplicado a la norma L2 al reforzar o rescatar un recuerdo (tope `1.0`). |
+| `UMBRAL_PERSISTENTE` | `0.99` | Norma mínima requerida para promover un recuerdo de episódica a persistente. |
+| `UMBRAL_CASTIGO` / `DECAIMIENTO_CASTIGO` | `0.58` / `1` | Umbral de detección de correcciones y horas residuales tras inhibición semántica. |
+| `DECAIMIENTO_HIPOCAMPO` / `_MEMORIA` / `_PERSISTENTE` | `24` / `24*7` / `24*365` | Horizonte temporal en horas para el decaimiento en cada capa de memoria. |
+| `MAX_HIPOCAMPO` / `MAX_MEMORIA` / `MAX_MEM_HERRAMIENTA` | `2` / `2` / `1` | Límites de turnos inyectados en el contexto por turno de inferencia. |
+| `MAX_PARTICION` / `MAX_MODULOS` | `100` / `20` | Tamaño máximo de partición JSONL y tope Top-K de módulos enviados al prompt. |
+| `MAX_REINTENTOS` / `TIMEOUT_HERRAMIENTA` | `5` / `20` | Máximo de pasos iterativos en `AGENTE` y tiempo límite (segundos) por ejecución. |
+| `TIEMPO_DESPIERTO` | `5*60` | Tiempo máximo de inactividad (segundos) antes de suspender `:8081` y `:8082`. |
+
+---
+
+## Catálogo de módulos y extensibilidad
+
+### Módulos incluidos (`MODULOS/`)
+
+El proyecto incluye **28 ficheros** que exponen **30 comandos** agrupados por dominio funcional:
+
+| Dominio | Módulos / Comandos |
+| :--- | :--- |
+| **Sistema de archivos** | `ruta`, `listar`, `identificar`, `mirar`, `crear_directorio` (`crear_dir`), `crear_fichero`, `escribir`, `anadir`, `editar`, `copiar_fichero`, `copiar_directorio`, `pegar_fichero`, `pegar_directorio`, `mover`, `renombrar`, `buscar`, `buscar_texto` |
+| **Entorno y diagnóstico** | `fecha`, `hora`, `maquina` *(CPU, RAM, sistema y GPU vía `nvidia-smi`)* |
+| **Red y control de versiones** | `buscar_internet`, `subir_github` |
+| **Meteorología** | `meteo_ahora`, `meteo_hoy`, `meteo_manana`, `meteo_ayer`, `meteo_semana`, `meteo_estacion` |
+| **Guías operativas** | `skill` *(sin argumentos lista las guías disponibles en `SKILLS/`)* |
+
+### Añadir nuevos módulos y guías
+
+* **Nuevo módulo:** crea un archivo ejecutable dentro de `MODULOS/` siguiendo la convención de cabecera `# Modulo:` para su descubrimiento automático. En la siguiente consulta, `HERRAMIENTAS/bash` detectará el cambio de `cksum` e indexará su embedding sin intervención manual:
+
+```bash
+#!/bin/bash
+# Modulo: ejemplo_saludo [nombre] - Genera un saludo con marca temporal
+
+ejemplo_saludo() {
+    NOMBRE_OBJ="${1:-mundo}"
+    echo "Hola, ${NOMBRE_OBJ} ($(date "+%H:%M:%S"))"
+}
+```
+
+* **Nueva skill:** añade un fichero `.txt` o `.md` dentro de `SKILLS/`. Quedará accesible de inmediato a través del comando `skill <nombre>`.
+
+---
+
+## Análisis empírico y limitaciones en modelos compactos
+
+Parte del alcance experimental de **IAUTONOMA** consiste en caracterizar el comportamiento real de modelos de lenguaje compactos cuantizados (`2B Q4`) al acoplarlos a memoria persistente y ejecución de herramientas. La siguiente tabla resume los modos de fallo observados y las limitaciones estructurales identificadas durante las pruebas:
+
+### Comportamientos empíricos observados
+
+| Modo de fallo | Manifestación observable | Causa técnica |
+| :--- | :--- | :--- |
+| **Sesgo de repetición y anclaje negativo** | Reitera literalmente respuestas previas o reproduce un dato incorrecto tras leer una negación que lo menciona. | La combinación de un modelo `2B Q4` con `TEMPERATURA="0.001"` favorece la copia literal del contexto inmediato; los mecanismos de atención se fijan en el valor citado incluso bajo negación explícita. |
+| **Atenuación de contexto por umbral o ventana** | Pierde continuidad ante consultas ambiguas o sobre hechos antiguos no reforzados. | El LLM carece de estado interno: si un recuerdo decae bajo `0.45`, sale de las cuotas `MAX_HIPOCAMPO`/`MAX_MEMORIA` o no alcanza similitud suficiente en la búsqueda vectorial, queda excluido del prompt. |
+| **Persistencia de datos volátiles** | Responde con horas, rutas o lecturas meteorológicas históricas como si fueran actuales sin invocar herramientas. | Datos efímeros repetidos o consultados con frecuencia pueden superar `0.99` y promoverse a `persistente`; pese al prefijo temporal `[YYYY-MM-DD HH:MM:SS]`, los modelos `2B` tienden a confundir el recuerdo reforzado con el estado presente. |
+| **Alucinación de ejecución de herramientas** | Declara haber ejecutado un módulo o fabrica una salida ficticia sin emitir una llamada estructurada `tool_calls`. | Bajo restricciones de capacidad, el modelo simula la acción en lenguaje natural en lugar de activar el protocolo estructurado de invocación. |
+| **Ambigüedad pronominal en estímulos internos** | Ante `<<Te despiertas>>` o `<<Te duermes>>`, responde como si el sujeto que realiza la acción fuera el usuario. | Los estímulos internos ingresan con `role: "user"`, provocando que el modelo interprete la segunda persona como conversación dirigida a un interlocutor humano. |
+| **Adulación tras corrección (*sycophancy*)** | Ante una crítica o corrección, concede la razón de forma indiscriminada llegando a contradecir hechos o su propia identidad operativa. | El ajuste conversacional base de los modelos compactos prioriza el acuerdo con el usuario sobre la consistencia fáctica cuando detecta desacuerdo. |
+| **Confusión entre esquema de herramientas y `SKILLS/`** | Enumera los módulos visibles en `tools` denominándolos *skills* en lugar de invocar `bash: skill`. | Interpreta el listado de firmas de módulos inyectado en el esquema de funciones como si correspondiera al contenido del directorio `SKILLS/`. |
+| **Sobreactivación de restricciones base (RLHF)** | Afirma no disponer de acceso al sistema operativo o a memoria persistente pese a tener ambos activos. | Ante errores de ejecución o cuestionamientos del usuario, los reflejos conservadores del alineamiento de fábrica prevalecen sobre las instrucciones del `system` prompt. |
+| **Bucles de generación en etiquetas de invocación** | Emite etiquetas parciales repetitivas (`<tool_call>`, `</parameter>`) hasta agotar el límite `-n 2048`. | Cuando el modelo intenta emitir una llamada fuera del formato estructurado con temperatura `0.001`, el decodificado determinista retroalimenta el token de cierre. |
+
+### Limitaciones estructurales latentes
+
+| Limitación | Impacto potencial | Origen arquitectónico |
+| :--- | :--- | :--- |
+| **Cobertura del enrutador Top-K** | Si el módulo adecuado queda fuera del conjunto seleccionado, el modelo improvisa con una herramienta incorrecta o niega la capacidad. | Con `28` módulos disponibles y `MAX_MODULOS="20"`, consultas excesivamente abstractas pueden desplazar el módulo pertinente fuera del Top-20 vectorial. |
+| **Granularidad de la inhibición semántica** | Hablar sobre errores técnicos ajenos puede atenuar un recuerdo válido, o un error ocurrido hace más de un turno puede quedar sin atenuar. | `DECAIMIENTO_CASTIGO` se dispara por similitud global (`>= 0.58`) contra `CONCEPTO_CASTIGO` y actúa únicamente sobre el último turno registrado en el hipocampo. |
+| **Precisión aritmética limitada** | Integra correctamente memoria y salidas de herramientas, pero presenta errores ocasionales en restas de horas o cálculos numéricos simples. | Limitación inherente a la capacidad de razonamiento numérico en modelos de `2B` parámetros cuantizados a `4 bits`. |
