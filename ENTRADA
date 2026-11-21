@@ -148,13 +148,27 @@ guardar_en_capa() {
                     ) as $marcados |
                     ([ $marcados[ ] | select(._sim >= $uref and ._loro == 0) ]) as $coincidentes |
                     if ($coincidentes | length) > 0 then
-                        ($coincidentes | sort_by(-._sim) | .[0]._ne) as $n_base |
-                        (if ($n_base * $fref) > $nq then ($n_base * $fref) else $nq end) as $n_bruto |
-                        (if $n_bruto > 1.0 then 1.0 else $n_bruto end) as $n_ref |
+                        ($coincidentes | sort_by(-._sim) | .[0]) as $gan |
+                        ($gan._ne) as $n_base |
+                        (
+                            if (($nuevo.herramienta // 0) == 1 or ($gan.herramienta // 0) == 1 or ((($nuevo.messages[1].content // "") | startswith("["))) or ((($gan.messages[1].content // "") | startswith("[")))) then
+                                1
+                            else
+                                0
+                            end
+                        ) as $es_herr |
+                        (
+                            if $es_herr == 1 then
+                                $nq
+                            else
+                                (if ($n_base * $fref) > $nq then ($n_base * $fref) else $nq end) as $n_bruto |
+                                (if $n_bruto > 1.0 then 1.0 else $n_bruto end)
+                            end
+                        ) as $n_ref |
                         ($u_nuevo | map((. * $n_ref * 10000 | round) / 10000)) as $emb_final |
                         (
                             [ $marcados[ ] | select(._sim < $uref or ._loro == 1) | del(._sim, ._su, ._sa, ._loro, ._ne) ] +
-                            [($nuevo + {embedding: $emb_final})]
+                            [($nuevo + {herramienta: $es_herr, embedding: $emb_final})]
                         )[ ]
                     else
                         ([
@@ -280,8 +294,9 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
     RESP_MEM=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAYLOAD_MEM")
     if [[ -z "$RESP_MEM" ]]; then RESP_MEM="{}"; fi
 
-    LINEA_TURNO=$(jq -a -c --arg f "$FECHA_HORA" --arg u "$ENTRADA_UNA_LINEA" --arg a "$RESPUESTA_UNA_LINEA" --argjson peso "$PESO_INICIAL" '{
+    LINEA_TURNO=$(jq -a -c --arg f "$FECHA_HORA" --arg u "$ENTRADA_UNA_LINEA" --arg a "$RESPUESTA_UNA_LINEA" --argjson peso "$PESO_INICIAL" --argjson mint "$MODO_INTERNO" '{
         fecha: $f,
+        herramienta: (if (($a | startswith("[")) or $mint == 1) then 1 else 0 end),
         messages: [
             {"role": "user", "content": $u},
             {"role": "assistant", "content": $a}
@@ -342,13 +357,27 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
             ) as $marcados |
             ([ $marcados[ ] | select(._sim >= $uref and ._loro == 0) ]) as $coincidentes |
             if ($coincidentes | length) > 0 then
-                ($coincidentes | sort_by(-._sim) | .[0]._ne) as $n_base |
-                (if ($n_base * $fref) > $nq then ($n_base * $fref) else $nq end) as $n_bruto |
-                (if $n_bruto > 1.0 then 1.0 else $n_bruto end) as $n_ref |
+                ($coincidentes | sort_by(-._sim) | .[0]) as $gan |
+                ($gan._ne) as $n_base |
+                (
+                    if (($nuevo.herramienta // 0) == 1 or ($gan.herramienta // 0) == 1 or ((($nuevo.messages[1].content // "") | startswith("["))) or ((($gan.messages[1].content // "") | startswith("[")))) then
+                        1
+                    else
+                        0
+                    end
+                ) as $es_herr |
+                (
+                    if $es_herr == 1 then
+                        $nq
+                    else
+                        (if ($n_base * $fref) > $nq then ($n_base * $fref) else $nq end) as $n_bruto |
+                        (if $n_bruto > 1.0 then 1.0 else $n_bruto end)
+                    end
+                ) as $n_ref |
                 ($u_nuevo | map((. * $n_ref * 10000 | round) / 10000)) as $emb_final |
                 (
                     [ $marcados[ ] | select(._sim < $uref or ._loro == 1) | del(._sim, ._su, ._sa, ._loro, ._ne) ] +
-                    [($nuevo + {embedding: $emb_final})]
+                    [($nuevo + {herramienta: $es_herr, embedding: $emb_final})]
                 )[-$maxh:][ ]
             else
                 ([
@@ -398,9 +427,9 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
     # 2. Guardar en Memoria Episodica particionada
     guardar_en_capa "$INDICE_EPISODICA" "$PREFIJO_EPISODICA" "$LINEA_TURNO" "$NORM_OBJ_MEM"
 
-    # 3. Ascenso a Memoria Persistente particionada si alcanza norma >= $UMBRAL_PERSISTENTE, o LTD si colisiona con un recuerdo persistente
+    # 3. Ascenso a Memoria Persistente particionada si alcanza norma >= $UMBRAL_PERSISTENTE (excluido cualquier dato volatil de herramienta), o LTD si colisiona con un recuerdo persistente
     CANDIDATO_PER=$(jq -a -c -s --argjson uper "$UMBRAL_PERSISTENTE" '
-        [ .[ ] | select(.embedding != null and ((.embedding | map(. * .) | add | sqrt) >= $uper)) ][-1] // empty
+        [ .[ ] | select((.herramienta // 0) == 0 and (((.messages[1].content // "") | startswith("[")) | not) and .embedding != null and ((.embedding | map(. * .) | add | sqrt) >= $uper)) ][-1] // empty
     ' "$DIR_MEMORIA/$ULTIMA_PARTICION")
     if [[ -n "$CANDIDATO_PER" ]]; then
         guardar_en_capa "$INDICE_PERSISTENTE" "$PREFIJO_PERSISTENTE" "$CANDIDATO_PER" "$NORM_OBJ_PER"

@@ -40,7 +40,15 @@ decaer_particiones() {
                         fi
                     done < <(printf '%s\n' "$OLVIDO_TXT")
                 fi
-                mv -f "${f}.$$.tmp" "$f" 2>/dev/null
+                if [[ -f "$f" ]]; then
+                    if [[ ! "$f" -nt "${f}.$$.tmp" ]]; then
+                        mv -f "${f}.$$.tmp" "$f" 2>/dev/null
+                    else
+                        rm -f "${f}.$$.tmp" 2>/dev/null
+                    fi
+                else
+                    rm -f "${f}.$$.tmp" 2>/dev/null
+                fi
             fi
             if [[ ! -s "$f" ]]; then
                 NOMBRE_VACIO=$(basename "$f")
@@ -81,7 +89,15 @@ while true; do
                     fi
                 done < <(printf '%s\n' "$OLVIDO_TXT")
             fi
-            mv -f "${HIPOCAMPO}.$$.tmp" "$HIPOCAMPO" 2>/dev/null
+            if [[ -f "$HIPOCAMPO" ]]; then
+                if [[ ! "$HIPOCAMPO" -nt "${HIPOCAMPO}.$$.tmp" ]]; then
+                    mv -f "${HIPOCAMPO}.$$.tmp" "$HIPOCAMPO" 2>/dev/null
+                else
+                    rm -f "${HIPOCAMPO}.$$.tmp" 2>/dev/null
+                fi
+            else
+                rm -f "${HIPOCAMPO}.$$.tmp" 2>/dev/null
+            fi
         fi
     fi
 

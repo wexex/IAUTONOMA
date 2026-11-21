@@ -37,11 +37,30 @@ if [[ -n "$ENTRADA" ]]; then
 fi
 export VEC_CONSULTA
 
-# 1. Cargar Hipocampo real (el momento presente: ultimos $MAX_HIPOCAMPO turnos activos sobre el potencial de disparo)
+# 1. Cargar Hipocampo real (ultimos $MAX_HIPOCAMPO turnos activos sobre el potencial de disparo, excluyendo lecturas volatiles de herramienta del mismo tema)
 HIPOCAMPO_TURNOS="[ ]"
 if [[ -s "$HIPOCAMPO" ]]; then
-    HIPOCAMPO_TURNOS=$(jq -a -s --argjson maxh "$MAX_HIPOCAMPO" --argjson nd "$NORM_DISPARO_HIP" '
-        [ .[ ] | select(.embedding == null or ((.embedding | map(. * .) | add | sqrt) > $nd)) ][-$maxh:]
+    HIPOCAMPO_TURNOS=$(jq -a -s --argjson maxh "$MAX_HIPOCAMPO" --argjson nd "$NORM_DISPARO_HIP" --argjson q "${VEC_CONSULTA:-null}" --argjson umb "$UMBRAL_SIM" '
+        def cos(a; b):
+            if (a != null and b != null) then
+                ((a[:1024] | map(. * .) | add | sqrt) + 0.000001) as $na |
+                ((b[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nb |
+                (([a[:1024], b[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($na * $nb))
+            else
+                0
+            end;
+        [
+            .[ ] |
+            select(.embedding == null or ((.embedding | map(. * .) | add | sqrt) > $nd)) |
+            ((.herramienta // 0) == 1 or ((.messages[1].content // "") | startswith("["))) as $es_herr |
+            select(
+                ($es_herr | not) or ($q == null) or
+                (
+                    (if .emb_u != null then cos(.emb_u; $q) else 0 end) < $umb and
+                    (cos(.embedding; $q) < $umb)
+                )
+            )
+        ][-$maxh:]
     ' "$HIPOCAMPO" 2>/dev/null)
     if [[ -z "$HIPOCAMPO_TURNOS" ]]; then HIPOCAMPO_TURNOS="[ ]"; fi
 fi
@@ -199,17 +218,21 @@ buscar_y_reforzar_capa() {
                                 [
                                     $todos[ ] |
                                     if (.key == $ganador and $ganador >= 0) then
-                                        (.value.embedding[:1024] | map(. * $fref)) as $v_ref |
-                                        (($v_ref | map(. * .) | add | sqrt) + 0.000001) as $n_ref |
-                                        .value + {
-                                            embedding: (
-                                                if $n_ref > 1.0 then
-                                                    ($v_ref | map((. / $n_ref * 10000 | round) / 10000))
-                                                else
-                                                    ($v_ref | map((. * 10000 | round) / 10000))
-                                                end
-                                            )
-                                        }
+                                        if ((.value.herramienta // 0) == 1 or ((.value.messages[1].content // "") | startswith("["))) then
+                                            .value
+                                        else
+                                            (.value.embedding[:1024] | map(. * $fref)) as $v_ref |
+                                            (($v_ref | map(. * .) | add | sqrt) + 0.000001) as $n_ref |
+                                            .value + {
+                                                embedding: (
+                                                    if $n_ref > 1.0 then
+                                                        ($v_ref | map((. / $n_ref * 10000 | round) / 10000))
+                                                    else
+                                                        ($v_ref | map((. * 10000 | round) / 10000))
+                                                    end
+                                                )
+                                            }
+                                        end
                                     else
                                         .value
                                     end
@@ -220,7 +243,7 @@ buscar_y_reforzar_capa() {
                                 mv -f "$DIR_MEMORIA/${part}.$$.tmp" "$DIR_MEMORIA/$part" 2>/dev/null
                                 if [[ "$PUEDE_ASCENDER" == "1" ]]; then
                                     ASCENSO_PER=$(jq -a -c --argjson uper "$UMBRAL_PERSISTENTE" '
-                                        select(.embedding != null and ((.embedding | map(. * .) | add | sqrt) >= $uper))
+                                        select((.herramienta // 0) == 0 and (((.messages[1].content // "") | startswith("[")) | not) and .embedding != null and ((.embedding | map(. * .) | add | sqrt) >= $uper))
                                     ' "$DIR_MEMORIA/$part" 2>/dev/null)
                                     if [[ -n "$ASCENSO_PER" ]]; then
                                         while IFS= read -r lin_per; do
@@ -244,6 +267,14 @@ buscar_y_reforzar_capa "$INDICE_EPISODICA" "1" "$NORM_DISPARO_MEM"
 
 if [[ -n "$CANDIDATOS_RAW" ]]; then
     RECUERDOS_TURNOS=$(jq -a -s --argjson q "${VEC_CONSULTA:-null}" --argjson umb "$UMBRAL_SIM" --argjson maxm "$MAX_MEMORIA" --argjson maxh "$MAX_MEM_HERRAMIENTA" '
+        def cos(a; b):
+            if (a != null and b != null) then
+                ((a[:1024] | map(. * .) | add | sqrt) + 0.000001) as $na |
+                ((b[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nb |
+                (([a[:1024], b[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($na * $nb))
+            else
+                0
+            end;
         unique_by(.messages[0].content) |
         if $q == null then
             .[-$maxm:]
@@ -251,13 +282,21 @@ if [[ -n "$CANDIDATOS_RAW" ]]; then
             [
                 to_entries[ ] |
                 select(.value.embedding != null) |
-                . + {sim: ([.value.embedding, $q] | transpose | map((.[0] // 0) * (.[1] // 0)) | add)} |
+                ((.value.herramienta // 0) == 1 or ((.value.messages[1].content // "") | startswith("["))) as $es_herr |
+                select(
+                    ($es_herr | not) or
+                    (
+                        (if .value.emb_u != null then cos(.value.emb_u; $q) else 0 end) < $umb and
+                        (cos(.value.embedding; $q) < $umb)
+                    )
+                ) |
+                . + {sim: ([.value.embedding, $q] | transpose | map((.[0] // 0) * (.[1] // 0)) | add), _herr: (if $es_herr then 1 else 0 end)} |
                 select(.sim >= $umb)
             ] |
             sort_by(-.sim) |
             (
-                ([ .[ ] | select((.value.messages[1].content // "") | startswith("[")) ][: $maxh]) +
-                ([ .[ ] | select(((.value.messages[1].content // "") | startswith("[")) | not) ][: $maxm])
+                ([ .[ ] | select(._herr == 1) ][: $maxh]) +
+                ([ .[ ] | select(._herr == 0) ][: $maxm])
             ) |
             sort_by(-.sim)[:$maxm] |
             sort_by(.key) |
@@ -319,7 +358,7 @@ $INSTRUCCIONES_BASE
 - Dispones de memoria persistente.
 - Si el usuario niega, prohibe o corrige un dato previo, omite por completo el elemento negado y usa solo el dato valido actual.
 
-- Usa la herramienta bash y sus modulos solo cuando necesites consultar o actuar en el sistema; para conversar o recordar responde directamente.
+- Usa la herramienta bash y sus modulos cuando sea necesario.
 - Dispones de Skills para saber como usar las herramientas y sus modulos.
 - Dispones de acceso al sistema operativo.
 - Dispones de acceso al terminal de Linux.
