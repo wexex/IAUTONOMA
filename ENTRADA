@@ -124,6 +124,7 @@ guardar_en_capa() {
                     (($nuevo.embedding[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nq |
                     ($nuevo.embedding[:1024] | map(. / $nq)) as $u_nuevo |
                     (($umb + $uref) / 2) as $u_med |
+                    (($uref + 1.0) / 2) as $u_loro |
                     (($fref - 1.0) / 2) as $d_min |
                     (
                         [
@@ -131,52 +132,66 @@ guardar_en_capa() {
                             if .embedding != null then
                                 (.embedding[:1024]) as $v |
                                 (($v | map(. * .) | add | sqrt) + 0.000001) as $ne |
+                                (cos(.emb_u; $nuevo.emb_u)) as $su |
+                                (cos(.emb_a; $nuevo.emb_a)) as $sa |
                                 . + {
                                     _sim: (([$v, $nuevo.embedding[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($ne * $nq)),
-                                    _su: cos(.emb_u; $nuevo.emb_u),
-                                    _sa: cos(.emb_a; $nuevo.emb_a),
+                                    _su: $su,
+                                    _sa: $sa,
+                                    _loro: (if ($sa != null and $su != null and $sa >= $u_loro and $su < $uref) then 1 else 0 end),
                                     _ne: $ne
                                 }
                             else
-                                . + {_sim: 0, _su: null, _sa: null, _ne: 0}
+                                . + {_sim: 0, _su: null, _sa: null, _loro: 0, _ne: 0}
                             end
                         ]
                     ) as $marcados |
-                    ([ $marcados[ ] | select(._sim >= $uref) ]) as $coincidentes |
+                    ([ $marcados[ ] | select(._sim >= $uref and ._loro == 0) ]) as $coincidentes |
                     if ($coincidentes | length) > 0 then
                         ($coincidentes | sort_by(-._sim) | .[0]._ne) as $n_base |
                         (if ($n_base * $fref) > $nq then ($n_base * $fref) else $nq end) as $n_bruto |
                         (if $n_bruto > 1.0 then 1.0 else $n_bruto end) as $n_ref |
                         ($u_nuevo | map((. * $n_ref * 10000 | round) / 10000)) as $emb_final |
                         (
-                            [ $marcados[ ] | select(._sim < $uref) | del(._sim, ._su, ._sa, ._ne) ] +
+                            [ $marcados[ ] | select(._sim < $uref or ._loro == 1) | del(._sim, ._su, ._sa, ._loro, ._ne) ] +
                             [($nuevo + {embedding: $emb_final})]
                         )[ ]
                     else
                         ([
                             $marcados | to_entries[ ] |
                             select(
-                                .value._sim >= $umb and .value._sim < $uref and
+                                .value._loro == 1 or
                                 (
-                                    if (.value._sa != null and .value._su != null) then
-                                        (.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min)
-                                    else
-                                        (.value._sim >= $u_med)
-                                    end
+                                    .value._sim >= $umb and .value._sim < $uref and
+                                    (
+                                        if (.value._sa != null and .value._su != null) then
+                                            ((.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min) or (.value._su >= $u_med and (.value._su - .value._sa) >= ($d_min * 2)))
+                                        else
+                                            (.value._sim >= $u_med)
+                                        end
+                                    )
                                 )
                             )
                         ] | sort_by(-.value._sim) | .[0].key // -1) as $k_ltd |
+                        ([ $marcados[ ] | select(._loro == 1) ] | length) as $hay_loro |
+                        (
+                            if $hay_loro > 0 then
+                                ($nuevo + {embedding: ($u_nuevo | map((. * $nobj * 10000 | round) / 10000))})
+                            else
+                                $nuevo
+                            end
+                        ) as $nuevo_fin |
                         (
                             [
                                 $marcados | to_entries[ ] |
                                 if ($k_ltd >= 0 and .key == $k_ltd and .value._ne > $nobj) then
                                     (.value.embedding[:1024]) as $v |
                                     (.value._ne) as $ne |
-                                    (.value | del(._sim, ._su, ._sa, ._ne)) + {embedding: ($v | map(((. / $ne) * $nobj * 10000 | round) / 10000))}
+                                    (.value | del(._sim, ._su, ._sa, ._loro, ._ne)) + {embedding: ($v | map(((. / $ne) * $nobj * 10000 | round) / 10000))}
                                 else
-                                    (.value | del(._sim, ._su, ._sa, ._ne))
+                                    (.value | del(._sim, ._su, ._sa, ._loro, ._ne))
                                 end
-                            ] + [$nuevo]
+                            ] + [$nuevo_fin]
                         )[ ]
                     end
                 end
@@ -303,6 +318,7 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
             (($nuevo.embedding[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nq |
             ($nuevo.embedding[:1024] | map(. / $nq)) as $u_nuevo |
             (($umb + $uref) / 2) as $u_med |
+            (($uref + 1.0) / 2) as $u_loro |
             (($fref - 1.0) / 2) as $d_min |
             (
                 [
@@ -310,52 +326,66 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                     if .embedding != null then
                         (.embedding[:1024]) as $v |
                         (($v | map(. * .) | add | sqrt) + 0.000001) as $ne |
+                        (cos(.emb_u; $nuevo.emb_u)) as $su |
+                        (cos(.emb_a; $nuevo.emb_a)) as $sa |
                         . + {
                             _sim: (([$v, $nuevo.embedding[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($ne * $nq)),
-                            _su: cos(.emb_u; $nuevo.emb_u),
-                            _sa: cos(.emb_a; $nuevo.emb_a),
+                            _su: $su,
+                            _sa: $sa,
+                            _loro: (if ($sa != null and $su != null and $sa >= $u_loro and $su < $uref) then 1 else 0 end),
                             _ne: $ne
                         }
                     else
-                        . + {_sim: 0, _su: null, _sa: null, _ne: 0}
+                        . + {_sim: 0, _su: null, _sa: null, _loro: 0, _ne: 0}
                     end
                 ]
             ) as $marcados |
-            ([ $marcados[ ] | select(._sim >= $uref) ]) as $coincidentes |
+            ([ $marcados[ ] | select(._sim >= $uref and ._loro == 0) ]) as $coincidentes |
             if ($coincidentes | length) > 0 then
                 ($coincidentes | sort_by(-._sim) | .[0]._ne) as $n_base |
                 (if ($n_base * $fref) > $nq then ($n_base * $fref) else $nq end) as $n_bruto |
                 (if $n_bruto > 1.0 then 1.0 else $n_bruto end) as $n_ref |
                 ($u_nuevo | map((. * $n_ref * 10000 | round) / 10000)) as $emb_final |
                 (
-                    [ $marcados[ ] | select(._sim < $uref) | del(._sim, ._su, ._sa, ._ne) ] +
+                    [ $marcados[ ] | select(._sim < $uref or ._loro == 1) | del(._sim, ._su, ._sa, ._loro, ._ne) ] +
                     [($nuevo + {embedding: $emb_final})]
                 )[-$maxh:][ ]
             else
                 ([
                     $marcados | to_entries[ ] |
                     select(
-                        .value._sim >= $umb and .value._sim < $uref and
+                        .value._loro == 1 or
                         (
-                            if (.value._sa != null and .value._su != null) then
-                                (.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min)
-                            else
-                                (.value._sim >= $u_med)
-                            end
+                            .value._sim >= $umb and .value._sim < $uref and
+                            (
+                                if (.value._sa != null and .value._su != null) then
+                                    ((.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min) or (.value._su >= $u_med and (.value._su - .value._sa) >= ($d_min * 2)))
+                                else
+                                    (.value._sim >= $u_med)
+                                end
+                            )
                         )
                     )
                 ] | sort_by(-.value._sim) | .[0].key // -1) as $k_ltd |
+                ([ $marcados[ ] | select(._loro == 1) ] | length) as $hay_loro |
+                (
+                    if $hay_loro > 0 then
+                        ($nuevo + {embedding: ($u_nuevo | map((. * $nobj * 10000 | round) / 10000))})
+                    else
+                        $nuevo
+                    end
+                ) as $nuevo_fin |
                 (
                     [
                         $marcados | to_entries[ ] |
                         if ($k_ltd >= 0 and .key == $k_ltd and .value._ne > $nobj) then
                             (.value.embedding[:1024]) as $v |
                             (.value._ne) as $ne |
-                            (.value | del(._sim, ._su, ._sa, ._ne)) + {embedding: ($v | map(((. / $ne) * $nobj * 10000 | round) / 10000))}
+                            (.value | del(._sim, ._su, ._sa, ._loro, ._ne)) + {embedding: ($v | map(((. / $ne) * $nobj * 10000 | round) / 10000))}
                         else
-                            (.value | del(._sim, ._su, ._sa, ._ne))
+                            (.value | del(._sim, ._su, ._sa, ._loro, ._ne))
                         end
-                    ] + [$nuevo]
+                    ] + [$nuevo_fin]
                 )[-$maxh:][ ]
             end
         end
@@ -411,6 +441,7 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                     else
                         (($nuevo.embedding[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nq |
                         (($umb + $uref) / 2) as $u_med |
+                        (($uref + 1.0) / 2) as $u_loro |
                         (($fref - 1.0) / 2) as $d_min |
                         (
                             [
@@ -418,27 +449,33 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                                 if .embedding != null then
                                     (.embedding[:1024]) as $v |
                                     (($v | map(. * .) | add | sqrt) + 0.000001) as $ne |
+                                    (cos(.emb_u; $nuevo.emb_u)) as $su |
+                                    (cos(.emb_a; $nuevo.emb_a)) as $sa |
                                     . + {
                                         _sim: (([$v, $nuevo.embedding[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($ne * $nq)),
-                                        _su: cos(.emb_u; $nuevo.emb_u),
-                                        _sa: cos(.emb_a; $nuevo.emb_a),
+                                        _su: $su,
+                                        _sa: $sa,
+                                        _loro: (if ($sa != null and $su != null and $sa >= $u_loro and $su < $uref) then 1 else 0 end),
                                         _ne: $ne
                                     }
                                 else
-                                    . + {_sim: 0, _su: null, _sa: null, _ne: 0}
+                                    . + {_sim: 0, _su: null, _sa: null, _loro: 0, _ne: 0}
                                 end
                             ]
                         ) as $marcados |
                         ([
                             $marcados | to_entries[ ] |
                             select(
-                                .value._sim >= $umb and .value._sim < $uref and
+                                .value._loro == 1 or
                                 (
-                                    if (.value._sa != null and .value._su != null) then
-                                        (.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min)
-                                    else
-                                        (.value._sim >= $u_med)
-                                    end
+                                    .value._sim >= $umb and .value._sim < $uref and
+                                    (
+                                        if (.value._sa != null and .value._su != null) then
+                                            ((.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min) or (.value._su >= $u_med and (.value._su - .value._sa) >= ($d_min * 2)))
+                                        else
+                                            (.value._sim >= $u_med)
+                                        end
+                                    )
                                 )
                             )
                         ] | sort_by(-.value._sim) | .[0].key // -1) as $k_ltd |
@@ -447,9 +484,9 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                             if ($k_ltd >= 0 and .key == $k_ltd and .value._ne > $nobj) then
                                 (.value.embedding[:1024]) as $v |
                                 (.value._ne) as $ne |
-                                (.value | del(._sim, ._su, ._sa, ._ne)) + {embedding: ($v | map(((. / $ne) * $nobj * 10000 | round) / 10000))}
+                                (.value | del(._sim, ._su, ._sa, ._loro, ._ne)) + {embedding: ($v | map(((. / $ne) * $nobj * 10000 | round) / 10000))}
                             else
-                                (.value | del(._sim, ._su, ._sa, ._ne))
+                                (.value | del(._sim, ._su, ._sa, ._loro, ._ne))
                             end
                         ][ ]
                     end

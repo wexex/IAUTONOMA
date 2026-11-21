@@ -8,13 +8,22 @@ ENTRADA="$*"
 # Espera activa hasta que el servidor esté vivo y respondiendo (HTTP 200)
 while ! curl -sf "http://${HOST}:${PUERTO}/health" >/dev/null 2>&1; do sleep 0.5; done
 
-# Vectorizar consulta una sola vez (apoyandose en el Hipocampo si la frase actual es corta)
+H_HIP=$(( ${DECAIMIENTO_HIPOCAMPO} ))
+H_MEM=$(( ${DECAIMIENTO_MEMORIA} ))
+H_PER=$(( ${DECAIMIENTO_PERSISTENTE} ))
+H_CAS=$(( ${DECAIMIENTO_CASTIGO} ))
+
+NORM_DISPARO_HIP=$(jq -n --argjson u "$UMBRAL_SIM" --argjson p "$PESO_INICIAL" --argjson h "$H_HIP" --argjson c "$H_CAS" '($u * (((($p / $u) | log) * ($c / $h)) | exp)) + 0.001')
+NORM_DISPARO_MEM=$(jq -n --argjson u "$UMBRAL_SIM" --argjson p "$PESO_INICIAL" --argjson h "$H_MEM" --argjson c "$H_CAS" '($u * (((($p / $u) | log) * ($c / $h)) | exp)) + 0.001')
+NORM_DISPARO_PER=$(jq -n --argjson u "$UMBRAL_SIM" --argjson h "$H_PER" --argjson c "$H_CAS" '($u * ((((1.0 / $u) | log) * ($c / $h)) | exp)) + 0.001')
+
+# Vectorizar consulta una sola vez (apoyandose en el Hipocampo activo si la frase actual es corta)
 VEC_CONSULTA="null"
 if [[ -n "$ENTRADA" ]]; then
     TEXTO_CONSULTA="$ENTRADA"
     if [[ -s "$HIPOCAMPO" ]]; then
         if [[ ${#ENTRADA} -lt 25 ]]; then
-            ULTIMO_HIPO=$(jq -r -s '.[-1].messages[0].content // empty' "$HIPOCAMPO" 2>/dev/null)
+            ULTIMO_HIPO=$(jq -r -s --argjson nd "$NORM_DISPARO_HIP" '[ .[ ] | select(.embedding == null or ((.embedding | map(. * .) | add | sqrt) > $nd)) ][-1].messages[0].content // empty' "$HIPOCAMPO" 2>/dev/null)
             if [[ -n "$ULTIMO_HIPO" ]]; then
                 TEXTO_CONSULTA="$ULTIMO_HIPO $ENTRADA"
             fi
@@ -28,11 +37,11 @@ if [[ -n "$ENTRADA" ]]; then
 fi
 export VEC_CONSULTA
 
-# 1. Cargar Hipocampo real (el momento presente: ultimos $MAX_HIPOCAMPO turnos vivos)
+# 1. Cargar Hipocampo real (el momento presente: ultimos $MAX_HIPOCAMPO turnos activos sobre el potencial de disparo)
 HIPOCAMPO_TURNOS="[ ]"
 if [[ -s "$HIPOCAMPO" ]]; then
-    HIPOCAMPO_TURNOS=$(jq -a -s --argjson maxh "$MAX_HIPOCAMPO" --argjson umb "$UMBRAL_SIM" '
-        [ .[ ] | select(.embedding == null or ((.embedding | map(. * .) | add | sqrt) >= $umb)) ][-$maxh:]
+    HIPOCAMPO_TURNOS=$(jq -a -s --argjson maxh "$MAX_HIPOCAMPO" --argjson nd "$NORM_DISPARO_HIP" '
+        [ .[ ] | select(.embedding == null or ((.embedding | map(. * .) | add | sqrt) > $nd)) ][-$maxh:]
     ' "$HIPOCAMPO" 2>/dev/null)
     if [[ -z "$HIPOCAMPO_TURNOS" ]]; then HIPOCAMPO_TURNOS="[ ]"; fi
 fi
@@ -147,6 +156,7 @@ ascender_a_persistente() {
 buscar_y_reforzar_capa() {
     CAPA_IND="$1"
     PUEDE_ASCENDER="$2"
+    CAPA_ND="$3"
 
     if [[ -s "$CAPA_IND" ]]; then
         PARTICIONES_BUSCAR=$(jq -r -s --arg ent "$ENTRADA" --argjson q "${VEC_CONSULTA:-null}" --argjson umb "$UMBRAL_SIM" '
@@ -169,12 +179,17 @@ buscar_y_reforzar_capa() {
             while IFS= read -r part; do
                 if [[ -n "$part" ]]; then
                     if [[ -s "$DIR_MEMORIA/$part" ]]; then
-                        CANDIDATOS_RAW+=$(cat "$DIR_MEMORIA/$part")$'\n'
+                        CANDIDATOS_ACT=$(jq -a -c --argjson nd "$CAPA_ND" '
+                            select(.embedding != null and ((.embedding | map(. * .) | add | sqrt) > $nd))
+                        ' "$DIR_MEMORIA/$part" 2>/dev/null)
+                        if [[ -n "$CANDIDATOS_ACT" ]]; then
+                            CANDIDATOS_RAW+="$CANDIDATOS_ACT"$'\n'
+                        fi
                         if [[ "$VEC_CONSULTA" != "null" ]]; then
-                            PART_REFORZADA=$(jq -a -c -s --argjson q "$VEC_CONSULTA" --argjson umb "$UMBRAL_SIM" --argjson fref "$FACTOR_REFUERZO" '
+                            PART_REFORZADA=$(jq -a -c -s --argjson q "$VEC_CONSULTA" --argjson umb "$UMBRAL_SIM" --argjson nd "$CAPA_ND" --argjson fref "$FACTOR_REFUERZO" '
                                 [
                                     to_entries[ ] |
-                                    if .value.embedding != null then
+                                    if (.value.embedding != null and ((.value.embedding | map(. * .) | add | sqrt) > $nd)) then
                                         . + {_sim: ([.value.embedding, $q] | transpose | map((.[0] // 0) * (.[1] // 0)) | add)}
                                     else
                                         . + {_sim: 0}
@@ -224,8 +239,8 @@ buscar_y_reforzar_capa() {
     fi
 }
 
-buscar_y_reforzar_capa "$INDICE_PERSISTENTE" "0"
-buscar_y_reforzar_capa "$INDICE_EPISODICA" "1"
+buscar_y_reforzar_capa "$INDICE_PERSISTENTE" "0" "$NORM_DISPARO_PER"
+buscar_y_reforzar_capa "$INDICE_EPISODICA" "1" "$NORM_DISPARO_MEM"
 
 if [[ -n "$CANDIDATOS_RAW" ]]; then
     RECUERDOS_TURNOS=$(jq -a -s --argjson q "${VEC_CONSULTA:-null}" --argjson umb "$UMBRAL_SIM" --argjson maxm "$MAX_MEMORIA" --argjson maxh "$MAX_MEM_HERRAMIENTA" '
@@ -302,8 +317,9 @@ INSTRUCCIONES_BASE='
 INSTRUCCION_AGENTE="\
 $INSTRUCCIONES_BASE
 - Dispones de memoria persistente.
+- Si el usuario niega, prohibe o corrige un dato previo, omite por completo el elemento negado y usa solo el dato valido actual.
 
-- Usa la herramienta bash y sus modulos cuando sea necesario.
+- Usa la herramienta bash y sus modulos solo cuando necesites consultar o actuar en el sistema; para conversar o recordar responde directamente.
 - Dispones de Skills para saber como usar las herramientas y sus modulos.
 - Dispones de acceso al sistema operativo.
 - Dispones de acceso al terminal de Linux.
@@ -316,7 +332,7 @@ RESPONDI=0
 
 # Intentos de obtener respuesta
 for (( PASO=1; PASO<=MAX_REINTENTOS; PASO++ )); do
-    JSON_PAYLOAD=$(jq -a --arg sys "$INSTRUCCION_AGENTE" --argjson turno "$MENSAJES_TURNO" --argjson tls "$TOOLS_JSON" --argjson temp "$TEMPERATURA" '{
+    JSON_PAYLOAD=$(jq -a --arg sys "$INSTRUCCION_AGENTE" --argjson turno "$MENSAJES_TURNO" --argjson tls "$TOOLS_JSON" --argjson temp "$TEMPERATURA" --argjson rpen "${PENALIZACION_REPETICION:-1.15}" '{
         messages: (
             [{"role": "system", "content": $sys}] +
             . +
@@ -324,7 +340,8 @@ for (( PASO=1; PASO<=MAX_REINTENTOS; PASO++ )); do
         ),
         tools: $tls,
         tool_choice: "auto",
-        temperature: $temp
+        temperature: $temp,
+        repeat_penalty: $rpen
     }' < <(echo "$MEMORIA_JSON"))
 
     # Petición a llama-server
@@ -385,13 +402,14 @@ if [[ $RESPONDI -eq 0 ]]; then
 $INSTRUCCIONES_BASE
 - Usa tus recuerdos y los datos devueltos por las herramientas para responder con precision.
 "
-    PAYLOAD_FINAL=$(jq -a --arg sys "$INSTRUCCION_HERRAMIENTAS" --argjson turno "$MENSAJES_TURNO" --argjson temp "$TEMPERATURA" '{
+    PAYLOAD_FINAL=$(jq -a --arg sys "$INSTRUCCION_HERRAMIENTAS" --argjson turno "$MENSAJES_TURNO" --argjson temp "$TEMPERATURA" --argjson rpen "${PENALIZACION_REPETICION:-1.15}" '{
         messages: (
             [{"role": "system", "content": $sys}] +
             . +
             $turno
         ),
-        temperature: $temp
+        temperature: $temp,
+        repeat_penalty: $rpen
     }' < <(echo "$MEMORIA_JSON"))
 
     RESPUESTA_FINAL=$(curl -s "$URL" -H "Content-Type: application/json" -d "$PAYLOAD_FINAL")

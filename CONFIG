@@ -15,6 +15,7 @@ HOST="localhost"
 PUERTO="8081"
 URL="http://${HOST}:${PUERTO}/v1/chat/completions"
 TEMPERATURA="0.001"
+PENALIZACION_REPETICION="1.15"
 
 # Memoria
 PUERTO_MEMORIA="8082"
