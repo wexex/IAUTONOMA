@@ -3,7 +3,7 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/CONFIG"
 
 NOMBRE="$1"
-EPOCAS="${2:-3}"
+EPOCAS="${2:-2}"
 RANGO="${3:-4}"
 ALFA="${4:-16}"
 
@@ -51,16 +51,19 @@ fi
 RUTA_SCRIPT="$SCRIPT_PY"
 RUTA_DS="$ARCH_DATASET"
 RUTA_OUT="$ARCH_SALIDA"
+RUTA_MODS="$DIR_MODULOS"
 if command -v cygpath >/dev/null 2>/dev/null; then
     RUTA_SCRIPT="$(cygpath -w "$SCRIPT_PY")"
     RUTA_DS="$(cygpath -w "$ARCH_DATASET")"
     RUTA_OUT="$(cygpath -w "$ARCH_SALIDA")"
+    RUTA_MODS="$(cygpath -w "$DIR_MODULOS")"
 fi
 
 "$PY_BIN" "$RUTA_SCRIPT" \
     --dataset "$RUTA_DS" \
     --out "$RUTA_OUT" \
     --base-model "$MODELO_BASE_HF" \
+    --modules-dir "$RUTA_MODS" \
     --rank "$RANGO" \
     --alpha "$ALFA" \
     --epochs "$EPOCAS"

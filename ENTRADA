@@ -180,7 +180,7 @@ guardar_en_capa() {
                             select(
                                 (((.value.messages[0].content // "") | startswith("<<")) | not) and
                                 .value._sim >= $umb and .value._sim < $uref and
-                                ($nua == null or .value._sua == null or $nua > .value._sua) and
+                                (.value._su == null or .value._sua == null or .value._sa == null or .value._su >= .value._sua or .value._sa < $uref) and
                                 (
                                     if (.value._sa != null and .value._su != null) then
                                         ((.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min) or (.value._su >= $u_med and (.value._su - .value._sa) >= ($d_min * 2)))
@@ -391,7 +391,7 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                     select(
                         (((.value.messages[0].content // "") | startswith("<<")) | not) and
                         .value._sim >= $umb and .value._sim < $uref and
-                        ($nua == null or .value._sua == null or $nua > .value._sua) and
+                        (.value._su == null or .value._sua == null or .value._sa == null or .value._su >= .value._sua or .value._sa < $uref) and
                         (
                             if (.value._sa != null and .value._su != null) then
                                 ((.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min) or (.value._su >= $u_med and (.value._su - .value._sa) >= ($d_min * 2)))

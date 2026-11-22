@@ -91,13 +91,10 @@ enrutar_loras() {
         fi
         IND_LORA_JSON="[ ]"
         if [[ -s "$INDICE_LORA" ]]; then
-            IND_LORA_JSON=$(jq -a -s '.' "$INDICE_LORA" 2>/dev/null)
+            IND_LORA_JSON=$(jq -a -c -s '.' "$INDICE_LORA" 2>/dev/null)
             if [[ -z "$IND_LORA_JSON" ]]; then IND_LORA_JSON="[ ]"; fi
         fi
-        PAYLOAD_LORAS=$(jq -a -c -n \
-            --argjson srv "$LORAS_SRV" \
-            --argjson idx "$IND_LORA_JSON" \
-            --argjson q "${VEC_CONSULTA:-null}" \
+        PAYLOAD_LORAS=$(jq -a -c -s \
             --arg base "$LORA_BASE" \
             --argjson esc "${LORA_ESCALA:-1.0}" \
             --argjson umb "${UMBRAL_LORA:-0.45}" \
@@ -110,10 +107,13 @@ enrutar_loras() {
                 else
                     0
                 end;
+            (.[0] // [ ]) as $srv |
+            (.[1] // [ ]) as $idx |
+            (.[2] // null) as $q |
             ($idx | map({(.nombre): .embedding}) | add // {}) as $embs |
             [
                 $srv[ ] |
-                (.path | split("/") | last | split("\\") | last | sub("\\.gguf$"; "")) as $nom |
+                (.path | split("/")[-1] | split("\\")[-1] | rtrimstr(".gguf")) as $nom |
                 {
                     id: .id,
                     nom: $nom,
@@ -129,7 +129,7 @@ enrutar_loras() {
                     scale: (if (.es_base or (($ganadores | index(.id)) != null)) then $esc else 0.0 end)
                 }
             ]
-        ' 2>/dev/null)
+        ' < <(printf '%s\n%s\n%s\n' "$LORAS_SRV" "$IND_LORA_JSON" "${VEC_CONSULTA:-null}") 2>/dev/null)
         if [[ -n "$PAYLOAD_LORAS" ]]; then
             curl -sf -X POST "$URL_LORA" -H "Content-Type: application/json" -d "$PAYLOAD_LORAS" >/dev/null 2>/dev/null
         fi
@@ -472,7 +472,6 @@ $INSTRUCCIONES_BASE
 - Solo cuando el usuario rectifique un gusto, preferencia o dato personal suyo, adopta su nuevo dato personal omitiendo por completo el antiguo.
 - Las marcas entre << >> indican tu propio estado biologico (silencio, sueno o despertar).
 - Usa la herramienta bash y sus modulos solo cuando necesites consultar o actuar en el sistema; para conversar o recordar responde directamente.
-- Para consultar o listar tus Skills (guias en SKILLS/), ejecuta en bash el comando: skill (o skill <nombre>). Los modulos de bash son comandos, no son skills.
 "
 
 MENSAJES_TURNO=$(jq -a -n --arg ent "$ENTRADA" '[{"role": "user", "content": $ent}]')
