@@ -6,7 +6,8 @@ if [[ "$1" == "--spec" ]]; then
     ENTRADA_SPEC="$2"
     MODS_RAW=$(grep -rhi "^# Modulo:" "$DIR_MODULOS" 2>/dev/null)
     MODS_RAW="${MODS_RAW//$'\r'/}"
-    TOTAL_MODS=$(jq -R -s 'split("\n") | map(select(length > 0)) | length' < <(printf '%s\n' "$MODS_RAW"))
+    MODS_RAW=$(LC_ALL=C sort < <(printf '%s\n' "$MODS_RAW"))
+    TOTAL_MODS=$(grep -c "^# " < <(printf '%s\n' "$MODS_RAW"))
     MODULOS_ELEGIDOS="$MODS_RAW"
 
     if [[ "$TOTAL_MODS" -gt "$MAX_MODULOS" ]]; then
@@ -149,22 +150,22 @@ if [[ "$1" == "--spec" ]]; then
                         ] | sort_by(-.sim)[:4][ ].archivo
                     ' "$INDICE_MODULOS" 2>/dev/null)
                     if [[ -n "$PARTS_GANADORAS" ]]; then
-                        CANDIDATOS_TMP=""
+                        ARCHS_GANADORES=( )
                         while IFS= read -r arch_p; do
                             if [[ -n "$arch_p" ]]; then
                                 if [[ -s "$DIR_MEM_MODULOS/$arch_p" ]]; then
-                                    CANDIDATOS_TMP+="$(cat "$DIR_MEM_MODULOS/$arch_p")"$'\n'
+                                    ARCHS_GANADORES+=("$DIR_MEM_MODULOS/$arch_p")
                                 fi
                             fi
                         done < <(printf '%s\n' "$PARTS_GANADORAS")
-                        if [[ -n "$CANDIDATOS_TMP" ]]; then
+                        if [[ ${#ARCHS_GANADORES[@]} -gt 0 ]]; then
                             MODS_FILTRADOS=$(jq -r -s --argjson q "$VEC_CONSULTA" --argjson max "$MAX_MODULOS" '
                                 [
                                     .[ ] |
                                     select(.embedding != null) |
                                     . + {sim: ([.embedding, $q] | transpose | map(.[0] * .[1]) | add)}
-                                ] | sort_by(-.sim)[:$max][ ].modulo
-                            ' < <(printf '%s' "$CANDIDATOS_TMP") 2>/dev/null)
+                                ] | sort_by(-.sim)[:$max] | sort_by(.modulo)[ ].modulo
+                            ' "${ARCHS_GANADORES[@]}" 2>/dev/null)
                             if [[ -n "$MODS_FILTRADOS" ]]; then
                                 MODULOS_ELEGIDOS="$MODS_FILTRADOS"
                             fi
@@ -176,7 +177,7 @@ if [[ "$1" == "--spec" ]]; then
 
         if [[ "$MODULOS_ELEGIDOS" == "$MODS_RAW" ]]; then
             if [[ -n "$ENTRADA_SPEC" ]]; then
-                MODULOS_ELEGIDOS=$(jq -R -s -r --argjson max "$MAX_MODULOS" 'split("\n") | map(select(length > 0))[:$max][ ]' < <(printf '%s\n' "$MODS_RAW"))
+                MODULOS_ELEGIDOS=$(jq -R -s -r --argjson max "$MAX_MODULOS" 'split("\n") | map(select(length > 0))[:$max] | sort[ ]' < <(printf '%s\n' "$MODS_RAW"))
             fi
         fi
     fi

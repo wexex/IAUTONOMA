@@ -13,9 +13,19 @@ H_MEM=$(( ${DECAIMIENTO_MEMORIA} ))
 H_PER=$(( ${DECAIMIENTO_PERSISTENTE} ))
 H_CAS=$(( ${DECAIMIENTO_CASTIGO} ))
 
-NORM_DISPARO_HIP=$(jq -n --argjson u "$UMBRAL_SIM" --argjson p "$PESO_INICIAL" --argjson h "$H_HIP" --argjson c "$H_CAS" '($u * (((($p / $u) | log) * ($c / $h)) | exp)) + 0.001')
-NORM_DISPARO_MEM=$(jq -n --argjson u "$UMBRAL_SIM" --argjson p "$PESO_INICIAL" --argjson h "$H_MEM" --argjson c "$H_CAS" '($u * (((($p / $u) | log) * ($c / $h)) | exp)) + 0.001')
-NORM_DISPARO_PER=$(jq -n --argjson u "$UMBRAL_SIM" --argjson h "$H_PER" --argjson c "$H_CAS" '($u * ((((1.0 / $u) | log) * ($c / $h)) | exp)) + 0.001')
+read -r NORM_DISPARO_HIP NORM_DISPARO_MEM NORM_DISPARO_PER < <(jq -r -n \
+    --argjson u "$UMBRAL_SIM" \
+    --argjson p "$PESO_INICIAL" \
+    --argjson hh "$H_HIP" \
+    --argjson hm "$H_MEM" \
+    --argjson hp "$H_PER" \
+    --argjson c "$H_CAS" '
+    [
+        (($u * (((($p / $u) | log) * ($c / $hh)) | exp)) + 0.001),
+        (($u * (((($p / $u) | log) * ($c / $hm)) | exp)) + 0.001),
+        (($u * ((((1.0 / $u) | log) * ($c / $hp)) | exp)) + 0.001)
+    ] | map(tostring) | join(" ")
+')
 
 # Vectorizar consulta limpia (sin filtros fijos de longitud; respaldo vectorial por hipocampo si no dispara recuerdos)
 VEC_CONSULTA="null"
@@ -33,8 +43,22 @@ export VEC_CONSULTA
 enrutar_loras() {
     LORAS_SRV=$(curl -sf "$URL_LORA" 2>/dev/null)
     if [[ -z "$LORAS_SRV" ]]; then LORAS_SRV="[ ]"; fi
-    NUM_LORAS=$(jq -r 'length // 0' < <(echo "$LORAS_SRV") 2>/dev/null)
-    if [[ "${NUM_LORAS:-0}" -gt 0 ]]; then
+    ESTADO_LORA=$(jq -r --arg base "$LORA_BASE" --argjson esc "${LORA_ESCALA:-1.0}" '
+        (length // 0) as $n |
+        if $n == 0 then
+            "NONE"
+        elif $n == 1 then
+            (.[0].path | split("/")[-1] | split("\\")[-1] | rtrimstr(".gguf")) as $nom |
+            if ($nom == $base and (((.[0].scale // 0.0) - $esc) | fabs) <= 0.001) then
+                "OK"
+            else
+                "ROUTE"
+            end
+        else
+            "ROUTE"
+        end
+    ' < <(echo "$LORAS_SRV") 2>/dev/null)
+    if [[ "$ESTADO_LORA" == "ROUTE" ]]; then
         mkdir -p "$DIR_MEM_LORA"
         RAW_DESC=""
         for fl in "$DIR_LORA"/*.gguf; do
@@ -91,26 +115,23 @@ enrutar_loras() {
             --argjson esc "${LORA_ESCALA:-1.0}" \
             --argjson umb "${UMBRAL_LORA:-0.45}" \
             --argjson maxa "${MAX_LORAS_ACTIVOS:-2}" '
-            def cos(a; b):
-                if (a != null and b != null) then
-                    ((a[:1024] | map(. * .) | add | sqrt) + 0.000001) as $na |
-                    ((b[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nb |
-                    (([a[:1024], b[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($na * $nb))
-                else
-                    0
-                end;
+            def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+            def dot($a; $b): reduce range(0; 1024) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
             (.[0] // [ ]) as $srv |
             (.[1] // [ ]) as $idx |
             (.[2] // null) as $q |
+            (if $q != null then norm($q) else 1 end) as $nq |
             ($idx | map({(.nombre): .embedding}) | add // {}) as $embs |
             [
                 $srv[ ] |
                 (.path | split("/")[-1] | split("\\")[-1] | rtrimstr(".gguf")) as $nom |
+                ($embs[$nom]) as $ev |
                 {
                     id: .id,
                     nom: $nom,
+                    prev: (.scale // 0.0),
                     es_base: ($nom == $base),
-                    sim: (if $q != null then cos($embs[$nom]; $q) else 0 end)
+                    sim: (if ($q != null and $ev != null) then (dot($ev; $q) / (norm($ev) * $nq)) else 0 end)
                 }
             ] as $eval |
             ([ $eval[ ] | select((.es_base | not) and .sim >= $umb) ] | sort_by(-.sim)[:$maxa] | map(.id)) as $ganadores |
@@ -118,9 +139,15 @@ enrutar_loras() {
                 $eval[ ] |
                 {
                     id: .id,
+                    prev: .prev,
                     scale: (if (.es_base or (($ganadores | index(.id)) != null)) then $esc else 0.0 end)
                 }
-            ]
+            ] as $res |
+            if ([ $res[ ] | select(((.scale - .prev) | fabs) > 0.001) ] | length) > 0 then
+                [ $res[ ] | {id: .id, scale: .scale} ]
+            else
+                empty
+            end
         ' < <(printf '%s\n%s\n%s\n' "$LORAS_SRV" "$IND_LORA_JSON" "${VEC_CONSULTA:-null}") 2>/dev/null)
         if [[ -n "$PAYLOAD_LORAS" ]]; then
             curl -sf -X POST "$URL_LORA" -H "Content-Type: application/json" -d "$PAYLOAD_LORAS" >/dev/null 2>/dev/null
@@ -242,93 +269,123 @@ buscar_y_reforzar_capa() {
     APLICAR_REF="${4:-1}"
 
     if [[ -s "$CAPA_IND" ]]; then
-        PARTICIONES_BUSCAR=$(jq -r -s --arg ent "$ENTRADA" --argjson q "${VEC_CONSULTA:-null}" --argjson umb "$UMBRAL_SIM" '
+        PARTICIONES_BUSCAR=$(jq -r -s --argjson umb "$UMBRAL_SIM" '
+            def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+            def dot($a; $b): reduce range(0; 1024) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+            (.[0]) as $q |
+            (.[1:]) as $idx |
             if $q == null then
-                (.[ ] | select(.ultimo == 1) | .archivo) // empty
+                ($idx[ ] | select(type == "object" and .ultimo == 1) | .archivo) // empty
             else
+                (norm($q)) as $nq |
                 (
                     [
-                        .[ ] |
-                        select(.embedding != null) |
-                        ((.embedding | map(. * .) | add | sqrt) + 0.000001) as $ne |
-                        . + {sim: (([.embedding, $q] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / $ne)} |
+                        $idx[ ] |
+                        select(type == "object" and .embedding != null) |
+                        . + {sim: (dot(.embedding; $q) / (norm(.embedding) * $nq))} |
                         select(.sim >= $umb)
                     ] | sort_by(-.sim)[:2][ ].archivo
                 ) // empty
             end
-        ' "$CAPA_IND" 2>/dev/null)
+        ' < <(printf '%s\n' "${VEC_CONSULTA:-null}"; cat "$CAPA_IND") 2>/dev/null)
 
         if [[ -n "$PARTICIONES_BUSCAR" ]]; then
             while IFS= read -r part; do
                 if [[ -n "$part" ]]; then
                     if [[ -s "$DIR_MEMORIA/$part" ]]; then
-                        CANDIDATOS_ACT=$(jq -a -c --argjson nd "$CAPA_ND" '
-                            select(.embedding != null and ((.embedding | map(. * .) | add | sqrt) > $nd))
-                        ' "$DIR_MEMORIA/$part" 2>/dev/null)
-                        if [[ -n "$CANDIDATOS_ACT" ]]; then
-                            CANDIDATOS_RAW+="$CANDIDATOS_ACT"$'\n'
-                        fi
-                        if [[ "$VEC_CONSULTA" != "null" ]]; then
-                            if [[ "$APLICAR_REF" == "1" ]]; then
-                            PART_REFORZADA=$(jq -a -c -s --argjson q "$VEC_CONSULTA" --argjson umb "$UMBRAL_SIM" --argjson nd "$CAPA_ND" --argjson fref "$FACTOR_REFUERZO" --argjson pini "$PESO_INICIAL" '
-                                def cos(a; b):
-                                    if (a != null and b != null) then
-                                        ((a[:1024] | map(. * .) | add | sqrt) + 0.000001) as $na |
-                                        ((b[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nb |
-                                        (([a[:1024], b[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($na * $nb))
-                                    else
-                                        0
-                                    end;
+                        TMP_ITEMS_PART="$DIR_MEMORIA/${part}.$$.tmp"
+                        LIN_ASC=""
+                        HUBO_CAMBIO=0
+                        while IFS=$'\t' read -r tag payload_line; do
+                            if [[ "$tag" == "C" ]]; then
+                                CANDIDATOS_RAW+="$payload_line"$'\n'
+                            elif [[ "$tag" == "I" ]]; then
+                                if [[ $HUBO_CAMBIO -eq 0 ]]; then
+                                    > "$TMP_ITEMS_PART"
+                                    HUBO_CAMBIO=1
+                                fi
+                                printf '%s\n' "$payload_line" >> "$TMP_ITEMS_PART"
+                            elif [[ "$tag" == "A" ]]; then
+                                LIN_ASC="$payload_line"
+                            fi
+                        done < <(jq -a -r -s \
+                            --argjson umb "$UMBRAL_SIM" \
+                            --argjson nd "$CAPA_ND" \
+                            --argjson fref "$FACTOR_REFUERZO" \
+                            --argjson pini "$PESO_INICIAL" \
+                            --argjson uper "$UMBRAL_PERSISTENTE" \
+                            --argjson maxm "$MAX_MEMORIA" \
+                            --argjson ref "$APLICAR_REF" \
+                            --argjson asc "$PUEDE_ASCENDER" '
+                            def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                            def dot($a; $b): reduce range(0; 1024) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                            (.[0]) as $q |
+                            (.[1:]) as $items |
+                            if $q == null then
+                                ([ $items[ ] | select(type == "object" and (.embedding == null or norm(.embedding) > $nd)) ][-$maxm:][ ] |
+                                 "C\t" + ({fecha: .fecha, messages: .messages, _sim: 1, _herr: (if ((.herramienta // 0) == 1 or ((.messages[1].content // "") | startswith("["))) then 1 else 0 end)} | tojson))
+                            else
+                                (norm($q)) as $nq |
                                 [
-                                    to_entries[ ] |
-                                    if (.value.embedding != null and ((.value.embedding | map(. * .) | add | sqrt) > $nd)) then
-                                        ((.value.embedding | map(. * .) | add | sqrt) + 0.000001) as $ne |
-                                        (cos(.value.embedding; $q)) as $c_emb |
-                                        (if .value.emb_u != null then cos(.value.emb_u; $q) else 0 end) as $c_u |
-                                        (if $c_u > $c_emb then $c_u else $c_emb end) as $c_max |
-                                        . + {_cos: $c_max, _sim: ($ne * $c_max)}
+                                    $items | to_entries[ ] |
+                                    if (.value | type == "object" and .embedding != null) then
+                                        (norm(.value.embedding)) as $ne |
+                                        if $ne > $nd then
+                                            ((.value.herramienta // 0) == 1 or ((.value.messages[1].content // "") | startswith("["))) as $es_herr |
+                                            (dot(.value.embedding; $q) / ($ne * $nq)) as $c_emb |
+                                            (if .value.emb_u != null then (dot(.value.emb_u; $q) / (norm(.value.emb_u) * $nq)) else 0 end) as $c_u |
+                                            (if $c_u > $c_emb then $c_u else $c_emb end) as $c_max |
+                                            . + {_ne: $ne, _cos: $c_max, _c_emb: $c_emb, _c_u: $c_u, _sim: ($ne * $c_max), _herr: (if $es_herr then 1 else 0 end)}
+                                        else
+                                            . + {_ne: $ne, _cos: 0, _c_emb: 0, _c_u: 0, _sim: 0, _herr: 0}
+                                        end
                                     else
-                                        . + {_cos: 0, _sim: 0}
+                                        . + {_ne: 0, _cos: 0, _c_emb: 0, _c_u: 0, _sim: 0, _herr: 0}
                                     end
                                 ] as $todos |
-                                ([ $todos[ ] | select(._cos >= $umb) ] | sort_by(-._sim) | .[0].key // -1) as $ganador |
-                                [
-                                    $todos[ ] |
-                                    if (.key == $ganador and $ganador >= 0) then
-                                        ((.value.herramienta // 0) == 1 or ((.value.messages[1].content // "") | startswith("["))) as $es_herr |
-                                        (if $es_herr then $pini else 1.0 end) as $tope |
-                                        (.value.embedding[:1024] | map(. * $fref)) as $v_ref |
-                                        (($v_ref | map(. * .) | add | sqrt) + 0.000001) as $n_ref |
-                                        .value + {
-                                            embedding: (
+                                (
+                                    [ $todos[ ] | select(._cos >= $umb and (._herr == 0 or (._c_u < 0.75 and ._c_emb < 0.75))) ] |
+                                    sort_by(-._sim)[:($maxm + 1)][ ] |
+                                    "C\t" + ({fecha: .value.fecha, messages: .value.messages, _sim: ._sim, _herr: ._herr} | tojson)
+                                ),
+                                (
+                                    ([ $todos[ ] | select(._cos >= $umb) ] | sort_by(-._sim) | .[0] // null) as $gan |
+                                    if ($ref == 1 and $gan != null) then
+                                        (if $gan._herr == 1 then $pini else 1.0 end) as $tope |
+                                        if ($gan._ne < ($tope - 0.001)) then
+                                            ($gan.value.embedding[:1024] | map(. * $fref)) as $v_ref |
+                                            (norm($v_ref)) as $n_ref |
+                                            (if $n_ref > $tope then $tope else $n_ref end) as $n_fin |
+                                            (
                                                 if $n_ref > $tope then
                                                     ($v_ref | map((. / $n_ref * $tope * 10000 | round) / 10000))
                                                 else
                                                     ($v_ref | map((. * 10000 | round) / 10000))
                                                 end
+                                            ) as $emb_fin |
+                                            ($gan.value + {embedding: $emb_fin}) as $gan_act |
+                                            (
+                                                ($todos[ ] | "I\t" + ((if .key == $gan.key then $gan_act else .value end) | tojson)),
+                                                (if ($asc == 1 and $gan._herr == 0 and ((($gan.value.messages[0].content // "") | startswith("<<")) | not) and $n_fin >= $uper) then ("A\t" + ($gan_act | tojson)) else empty end)
                                             )
-                                        }
+                                        else
+                                            empty
+                                        end
                                     else
-                                        .value
+                                        empty
                                     end
-                                ][ ]
-                            ' "$DIR_MEMORIA/$part" 2>/dev/null)
-                            if [[ -n "$PART_REFORZADA" ]]; then
-                                echo "$PART_REFORZADA" > "$DIR_MEMORIA/${part}.$$.tmp"
-                                mv -f "$DIR_MEMORIA/${part}.$$.tmp" "$DIR_MEMORIA/$part" 2>/dev/null
-                                if [[ "$PUEDE_ASCENDER" == "1" ]]; then
-                                    ASCENSO_PER=$(jq -a -c --argjson uper "$UMBRAL_PERSISTENTE" '
-                                        select((.herramienta // 0) == 0 and (((.messages[1].content // "") | startswith("[")) | not) and (((.messages[0].content // "") | startswith("<<")) | not) and .embedding != null and ((.embedding | map(. * .) | add | sqrt) >= $uper))
-                                    ' "$DIR_MEMORIA/$part" 2>/dev/null)
-                                    if [[ -n "$ASCENSO_PER" ]]; then
-                                        while IFS= read -r lin_per; do
-                                            if [[ -n "$lin_per" ]]; then
-                                                ascender_a_persistente "$lin_per"
-                                            fi
-                                        done < <(printf '%s\n' "$ASCENSO_PER")
-                                    fi
-                                fi
+                                )
+                            end
+                        ' < <(printf '%s\n' "${VEC_CONSULTA:-null}"; cat "$DIR_MEMORIA/$part") 2>/dev/null)
+
+                        if [[ $HUBO_CAMBIO -eq 1 ]]; then
+                            if [[ -s "$TMP_ITEMS_PART" ]]; then
+                                mv -f "$TMP_ITEMS_PART" "$DIR_MEMORIA/$part" 2>/dev/null
+                            else
+                                rm -f "$TMP_ITEMS_PART"
                             fi
+                            if [[ -n "$LIN_ASC" ]]; then
+                                ascender_a_persistente "$LIN_ASC"
                             fi
                         fi
                     fi
@@ -341,43 +398,17 @@ buscar_y_reforzar_capa() {
 filtrar_recuerdos() {
     RECUERDOS_TURNOS="[ ]"
     if [[ -n "$CANDIDATOS_RAW" ]]; then
-        RECUERDOS_TURNOS=$(jq -a -s --argjson q "${VEC_CONSULTA:-null}" --argjson umb "$UMBRAL_SIM" --argjson maxm "$MAX_MEMORIA" --argjson maxh "$MAX_MEM_HERRAMIENTA" '
-            def cos(a; b):
-                if (a != null and b != null) then
-                    ((a[:1024] | map(. * .) | add | sqrt) + 0.000001) as $na |
-                    ((b[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nb |
-                    (([a[:1024], b[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($na * $nb))
-                else
-                    0
-                end;
+        RECUERDOS_TURNOS=$(jq -a -s --argjson maxm "$MAX_MEMORIA" --argjson maxh "$MAX_MEM_HERRAMIENTA" '
             unique_by(.messages[0].content) |
-            if $q == null then
-                .[-$maxm:]
-            else
-                [
-                    to_entries[ ] |
-                    select(.value.embedding != null) |
-                    ((.value.herramienta // 0) == 1 or ((.value.messages[1].content // "") | startswith("["))) as $es_herr |
-                    (cos(.value.embedding; $q)) as $c_emb |
-                    (if .value.emb_u != null then cos(.value.emb_u; $q) else 0 end) as $c_u |
-                    (if $c_u > $c_emb then $c_u else $c_emb end) as $c_max |
-                    select(
-                        ($es_herr | not) or
-                        ($c_u < 0.75 and $c_emb < 0.75)
-                    ) |
-                    select($c_max >= $umb) |
-                    ((.value.embedding | map(. * .) | add | sqrt) + 0.000001) as $ne |
-                    . + {sim: ($ne * $c_max), _herr: (if $es_herr then 1 else 0 end)}
-                ] |
-                sort_by(-.sim) |
-                (
-                    ([ .[ ] | select(._herr == 1) ][: $maxh]) +
-                    ([ .[ ] | select(._herr == 0) ][: $maxm])
-                ) |
-                sort_by(-.sim)[:$maxm] |
-                sort_by(.key) |
-                map(.value)
-            end
+            to_entries |
+            sort_by(-.value._sim) |
+            (
+                ([ .[ ] | select(.value._herr == 1) ][: $maxh]) +
+                ([ .[ ] | select(.value._herr == 0) ][: $maxm])
+            ) |
+            sort_by(-.value._sim)[:$maxm] |
+            sort_by(.key) |
+            map(.value | del(._sim, ._herr))
         ' < <(printf '%s' "$CANDIDATOS_RAW") 2>/dev/null)
         if [[ -z "$RECUERDOS_TURNOS" ]]; then RECUERDOS_TURNOS="[ ]"; fi
     fi
@@ -421,28 +452,24 @@ enrutar_loras
 # 2. Cargar Hipocampo real (ultimos $MAX_HIPOCAMPO turnos activos sobre el potencial de disparo, excluyendo lecturas volatiles de herramienta repetidas explicitamente)
 HIPOCAMPO_TURNOS="[ ]"
 if [[ -s "$HIPOCAMPO" ]]; then
-    HIPOCAMPO_TURNOS=$(jq -a -s --argjson maxh "$MAX_HIPOCAMPO" --argjson nd "$NORM_DISPARO_HIP" --argjson q "${VEC_PURO:-null}" --argjson umb "$UMBRAL_SIM" '
-        def cos(a; b):
-            if (a != null and b != null) then
-                ((a[:1024] | map(. * .) | add | sqrt) + 0.000001) as $na |
-                ((b[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nb |
-                (([a[:1024], b[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($na * $nb))
-            else
-                0
-            end;
+    HIPOCAMPO_TURNOS=$(jq -a -s --argjson maxh "$MAX_HIPOCAMPO" --argjson nd "$NORM_DISPARO_HIP" '
+        def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+        def dot($a; $b): reduce range(0; 1024) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+        (.[0]) as $q |
+        (if $q != null then norm($q) else 1 end) as $nq |
         [
-            .[ ] |
-            select(.embedding == null or ((.embedding | map(. * .) | add | sqrt) > $nd)) |
+            .[1:][ ] |
+            select(type == "object" and (.embedding == null or norm(.embedding) > $nd)) |
             ((.herramienta // 0) == 1 or ((.messages[1].content // "") | startswith("["))) as $es_herr |
             select(
                 ($es_herr | not) or ($q == null) or
                 (
-                    (if .emb_u != null then cos(.emb_u; $q) else 0 end) < 0.75 and
-                    (cos(.embedding; $q) < 0.75)
+                    (if .emb_u != null then (dot(.emb_u; $q) / (norm(.emb_u) * $nq)) else 0 end) < 0.75 and
+                    ((if .embedding != null then (dot(.embedding; $q) / (norm(.embedding) * $nq)) else 0 end) < 0.75)
                 )
             )
         ][-$maxh:]
-    ' "$HIPOCAMPO" 2>/dev/null)
+    ' < <(printf '%s\n' "${VEC_PURO:-null}"; cat "$HIPOCAMPO") 2>/dev/null)
     if [[ -z "$HIPOCAMPO_TURNOS" ]]; then HIPOCAMPO_TURNOS="[ ]"; fi
 fi
 
@@ -558,7 +585,7 @@ else
             for (( IDX_C=0; IDX_C<NUM_TOOLS; IDX_C++ )); do
                 T_NAME_C=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_C" '$r.choices[0].message.tool_calls[$i].function.name // empty')
                 T_ARGS_C=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_C" '$r.choices[0].message.tool_calls[$i].function.arguments // empty')
-                M_USADO_C=$(jq -n -r --argjson a "$T_ARGS_C" '$a.comando // empty' 2>/dev/null)
+                M_USADO_C=$(jq -r '.comando // empty' < <(printf '%s' "$T_ARGS_C") 2>/dev/null)
                 M_USADO_C="${M_USADO_C#\# Modulo: }"
                 M_USADO_C="${M_USADO_C#\# modulo: }"
                 M_USADO_C="${M_USADO_C#Modulo: }"
@@ -581,7 +608,7 @@ else
             for (( IDX_T=0; IDX_T<NUM_TOOLS; IDX_T++ )); do
                 TOOL_NAME=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_T" '$r.choices[0].message.tool_calls[$i].function.name // empty')
                 TOOL_ARGS=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_T" '$r.choices[0].message.tool_calls[$i].function.arguments // empty')
-                MODULO_USADO=$(jq -n -r --argjson a "$TOOL_ARGS" '$a.comando // empty' 2>/dev/null)
+                MODULO_USADO=$(jq -r '.comando // empty' < <(printf '%s' "$TOOL_ARGS") 2>/dev/null)
                 MODULO_USADO="${MODULO_USADO#\# Modulo: }"
                 MODULO_USADO="${MODULO_USADO#\# modulo: }"
                 MODULO_USADO="${MODULO_USADO#Modulo: }"
@@ -617,19 +644,21 @@ else
             fi
 
             if [[ $PASO -lt $MAX_REINTENTOS ]]; then
-                TEXTO_REENRUTAR="$ENTRADA $ULTIMO_MOD_PASO ${ULTIMA_SAL_PASO:0:120}"
-                TEXTO_REENRUTAR="${TEXTO_REENRUTAR//$'\r'/ }"
-                TEXTO_REENRUTAR="${TEXTO_REENRUTAR//$'\n'/ }"
-                PAY_RE=$(jq -a -n --arg txt "$TEXTO_REENRUTAR" '{input: $txt}')
-                RESP_RE=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_RE")
-                if [[ -n "$RESP_RE" ]]; then
-                    VEC_RE=$(jq -c 'if .data then (.data[0].embedding | map((. * 10000 | round) / 10000)) else null end' < <(echo "$RESP_RE"))
-                    if [[ -n "$VEC_RE" ]]; then
-                        if [[ "$VEC_RE" != "null" ]]; then
-                            VEC_CONSULTA="$VEC_RE"
-                            export VEC_CONSULTA
-                            enrutar_loras
-                            cargar_herramientas "$TEXTO_REENRUTAR"
+                if [[ "$ULTIMA_SAL_PASO" == Error:* ]]; then
+                    TEXTO_REENRUTAR="$ENTRADA $ULTIMO_MOD_PASO ${ULTIMA_SAL_PASO:0:120}"
+                    TEXTO_REENRUTAR="${TEXTO_REENRUTAR//$'\r'/ }"
+                    TEXTO_REENRUTAR="${TEXTO_REENRUTAR//$'\n'/ }"
+                    PAY_RE=$(jq -a -n --arg txt "$TEXTO_REENRUTAR" '{input: $txt}')
+                    RESP_RE=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_RE")
+                    if [[ -n "$RESP_RE" ]]; then
+                        VEC_RE=$(jq -c 'if .data then (.data[0].embedding | map((. * 10000 | round) / 10000)) else null end' < <(echo "$RESP_RE"))
+                        if [[ -n "$VEC_RE" ]]; then
+                            if [[ "$VEC_RE" != "null" ]]; then
+                                VEC_CONSULTA="$VEC_RE"
+                                export VEC_CONSULTA
+                                enrutar_loras
+                                cargar_herramientas "$TEXTO_REENRUTAR"
+                            fi
                         fi
                     fi
                 fi

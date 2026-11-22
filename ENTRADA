@@ -109,11 +109,11 @@ guardar_en_capa() {
     if [[ -n "$PARTICION_GANADORA" ]]; then
         if [[ -s "$DIR_MEMORIA/$PARTICION_GANADORA" ]]; then
             PART_ACTUALIZADA=$(jq -a -c -s --argjson umb "$UMBRAL_SIM" --argjson uref "$UMBRAL_REFUERZO" --argjson fref "$FACTOR_REFUERZO" --argjson nobj "$CAPA_NORM_OBJ" '
-                def cos(a; b):
-                    if (a != null and b != null) then
-                        ((a[:1024] | map(. * .) | add | sqrt) + 0.000001) as $na |
-                        ((b[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nb |
-                        (([a[:1024], b[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($na * $nb))
+                def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                def dot($a; $b): reduce range(0; 1024) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                def cos($a; $b):
+                    if ($a != null and $b != null) then
+                        (dot($a; $b) / (norm($a) * norm($b)))
                     else
                         null
                     end;
@@ -122,7 +122,7 @@ guardar_en_capa() {
                 if $nuevo.embedding == null then
                     ($items + [$nuevo])[ ]
                 else
-                    (($nuevo.embedding[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nq |
+                    (norm($nuevo.embedding)) as $nq |
                     ($nuevo.embedding[:1024] | map(. / $nq)) as $u_nuevo |
                     (($umb + $uref) / 2) as $u_med |
                     (($uref + 1.0) / 2) as $u_loro |
@@ -131,14 +131,13 @@ guardar_en_capa() {
                     (
                         [
                             $items[ ] |
-                            if .embedding != null then
-                                (.embedding[:1024]) as $v |
-                                (($v | map(. * .) | add | sqrt) + 0.000001) as $ne |
+                            if (type == "object" and .embedding != null) then
+                                (norm(.embedding)) as $ne |
                                 (cos(.emb_u; $nuevo.emb_u)) as $su |
                                 (cos(.emb_a; $nuevo.emb_a)) as $sa |
                                 (cos(.emb_u; $nuevo.emb_a)) as $sua |
                                 . + {
-                                    _sim: (([$v, $nuevo.embedding[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($ne * $nq)),
+                                    _sim: (dot(.embedding; $nuevo.embedding) / ($ne * $nq)),
                                     _su: $su,
                                     _sa: $sa,
                                     _sua: $sua,
@@ -314,17 +313,27 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
     H_PER=$(( ${DECAIMIENTO_PERSISTENTE} ))
     H_CAS=$(( ${DECAIMIENTO_CASTIGO} ))
 
-    NORM_OBJ_HIP=$(jq -n --argjson u "$UMBRAL_SIM" --argjson p "$PESO_INICIAL" --argjson h "$H_HIP" --argjson c "$H_CAS" '$u * (((($p / $u) | log) * ($c / $h)) | exp)')
-    NORM_OBJ_MEM=$(jq -n --argjson u "$UMBRAL_SIM" --argjson p "$PESO_INICIAL" --argjson h "$H_MEM" --argjson c "$H_CAS" '$u * (((($p / $u) | log) * ($c / $h)) | exp)')
-    NORM_OBJ_PER=$(jq -n --argjson u "$UMBRAL_SIM" --argjson h "$H_PER" --argjson c "$H_CAS" '$u * ((((1.0 / $u) | log) * ($c / $h)) | exp)')
+    read -r NORM_OBJ_HIP NORM_OBJ_MEM NORM_OBJ_PER < <(jq -r -n \
+        --argjson u "$UMBRAL_SIM" \
+        --argjson p "$PESO_INICIAL" \
+        --argjson hh "$H_HIP" \
+        --argjson hm "$H_MEM" \
+        --argjson hp "$H_PER" \
+        --argjson c "$H_CAS" '
+        [
+            ($u * (((($p / $u) | log) * ($c / $hh)) | exp)),
+            ($u * (((($p / $u) | log) * ($c / $hm)) | exp)),
+            ($u * ((((1.0 / $u) | log) * ($c / $hp)) | exp))
+        ] | map(tostring) | join(" ")
+    ')
 
     # 1. Actualizar Hipocampo real con plasticidad LTP / LTD de doble vector (OLVIDO gestiona su decaimiento de 24h)
     HIPO_NUEVO=$(jq -a -c -s --argjson maxp "$MAX_PARTICION" --argjson umb "$UMBRAL_SIM" --argjson uref "$UMBRAL_REFUERZO" --argjson fref "$FACTOR_REFUERZO" --argjson nobj "$NORM_OBJ_HIP" '
-        def cos(a; b):
-            if (a != null and b != null) then
-                ((a[:1024] | map(. * .) | add | sqrt) + 0.000001) as $na |
-                ((b[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nb |
-                (([a[:1024], b[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($na * $nb))
+        def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+        def dot($a; $b): reduce range(0; 1024) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+        def cos($a; $b):
+            if ($a != null and $b != null) then
+                (dot($a; $b) / (norm($a) * norm($b)))
             else
                 null
             end;
@@ -333,7 +342,7 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
         if ($nuevo.embedding == null or ($items | length) == 0) then
             ($items + [$nuevo])[-$maxp:][ ]
         else
-            (($nuevo.embedding[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nq |
+            (norm($nuevo.embedding)) as $nq |
             ($nuevo.embedding[:1024] | map(. / $nq)) as $u_nuevo |
             (($umb + $uref) / 2) as $u_med |
             (($uref + 1.0) / 2) as $u_loro |
@@ -342,14 +351,13 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
             (
                 [
                     $items[ ] |
-                    if .embedding != null then
-                        (.embedding[:1024]) as $v |
-                        (($v | map(. * .) | add | sqrt) + 0.000001) as $ne |
+                    if (type == "object" and .embedding != null) then
+                        (norm(.embedding)) as $ne |
                         (cos(.emb_u; $nuevo.emb_u)) as $su |
                         (cos(.emb_a; $nuevo.emb_a)) as $sa |
                         (cos(.emb_u; $nuevo.emb_a)) as $sua |
                         . + {
-                            _sim: (([$v, $nuevo.embedding[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($ne * $nq)),
+                            _sim: (dot(.embedding; $nuevo.embedding) / ($ne * $nq)),
                             _su: $su,
                             _sa: $sa,
                             _sua: $sua,
@@ -432,10 +440,10 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
     # 2. Guardar en Memoria Episodica particionada
     guardar_en_capa "$INDICE_EPISODICA" "$PREFIJO_EPISODICA" "$LINEA_TURNO" "$NORM_OBJ_MEM"
 
-    # 3. Ascenso a Memoria Persistente particionada si alcanza norma >= $UMBRAL_PERSISTENTE (excluido cualquier dato volatil de herramienta o estimulo de vigilia), o LTD si colisiona con un recuerdo persistente
-    CANDIDATO_PER=$(jq -a -c -s --argjson uper "$UMBRAL_PERSISTENTE" '
-        [ .[ ] | select((.herramienta // 0) == 0 and (((.messages[1].content // "") | startswith("[")) | not) and (((.messages[0].content // "") | startswith("<<")) | not) and .embedding != null and ((.embedding | map(. * .) | add | sqrt) >= $uper)) ][-1] // empty
-    ' "$DIR_MEMORIA/$ULTIMA_PARTICION")
+    # 3. Ascenso a Memoria Persistente particionada solo si el turno recien guardado (ultima linea) alcanzo norma >= $UMBRAL_PERSISTENTE, o LTD si colisiona con un recuerdo persistente
+    CANDIDATO_PER=$(jq -a -c --argjson uper "$UMBRAL_PERSISTENTE" '
+        select((.herramienta // 0) == 0 and (((.messages[1].content // "") | startswith("[")) | not) and (((.messages[0].content // "") | startswith("<<")) | not) and .embedding != null and ((.embedding | map(. * .) | add | sqrt) >= $uper))
+    ' < <(tail -n 1 "$DIR_MEMORIA/$ULTIMA_PARTICION"))
     if [[ -n "$CANDIDATO_PER" ]]; then
         guardar_en_capa "$INDICE_PERSISTENTE" "$PREFIJO_PERSISTENTE" "$CANDIDATO_PER" "$NORM_OBJ_PER"
     elif [[ -s "$INDICE_PERSISTENTE" ]]; then
@@ -460,33 +468,32 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
         if [[ -n "$PART_PER_LTD" ]]; then
             if [[ -s "$DIR_MEMORIA/$PART_PER_LTD" ]]; then
                 PER_LTD_ACT=$(jq -a -c -s --argjson umb "$UMBRAL_SIM" --argjson uref "$UMBRAL_REFUERZO" --argjson fref "$FACTOR_REFUERZO" --argjson nobj "$NORM_OBJ_PER" '
-                    def cos(a; b):
-                        if (a != null and b != null) then
-                            ((a[:1024] | map(. * .) | add | sqrt) + 0.000001) as $na |
-                            ((b[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nb |
-                            (([a[:1024], b[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($na * $nb))
+                    def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                    def dot($a; $b): reduce range(0; 1024) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                    def cos($a; $b):
+                        if ($a != null and $b != null) then
+                            (dot($a; $b) / (norm($a) * norm($b)))
                         else
                             null
                         end;
                     (.[0:-1]) as $items |
                     (.[-1]) as $nuevo |
                     if $nuevo.embedding == null then
-                        $items[ ]
+                        empty
                     else
-                        (($nuevo.embedding[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nq |
+                        (norm($nuevo.embedding)) as $nq |
                         (($umb + $uref) / 2) as $u_med |
                         (($uref + 1.0) / 2) as $u_loro |
                         (($fref - 1.0) / 2) as $d_min |
                         (
                             [
                                 $items[ ] |
-                                if .embedding != null then
-                                    (.embedding[:1024]) as $v |
-                                    (($v | map(. * .) | add | sqrt) + 0.000001) as $ne |
+                                if (type == "object" and .embedding != null) then
+                                    (norm(.embedding)) as $ne |
                                     (cos(.emb_u; $nuevo.emb_u)) as $su |
                                     (cos(.emb_a; $nuevo.emb_a)) as $sa |
                                     . + {
-                                        _sim: (([$v, $nuevo.embedding[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($ne * $nq)),
+                                        _sim: (dot(.embedding; $nuevo.embedding) / ($ne * $nq)),
                                         _su: $su,
                                         _sa: $sa,
                                         _loro: (if ($sa != null and $su != null and $sa >= $u_loro and $su < $uref) then 1 else 0 end),
@@ -516,16 +523,20 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                                 )
                             )
                         ] | sort_by(-.value._sim) | .[0].key // -1) as $k_ltd |
-                        [
-                            $marcados | to_entries[ ] |
-                            if ($k_ltd >= 0 and .key == $k_ltd and .value._ne > $nobj) then
-                                (.value.embedding[:1024]) as $v |
-                                (.value._ne) as $ne |
-                                (.value | del(._sim, ._su, ._sa, ._loro, ._ne)) + {embedding: ($v | map(((. / $ne) * $nobj * 10000 | round) / 10000))}
-                            else
-                                (.value | del(._sim, ._su, ._sa, ._loro, ._ne))
-                            end
-                        ][ ]
+                        if ($k_ltd >= 0 and $marcados[$k_ltd]._ne > $nobj) then
+                            [
+                                $marcados | to_entries[ ] |
+                                if .key == $k_ltd then
+                                    (.value.embedding[:1024]) as $v |
+                                    (.value._ne) as $ne |
+                                    (.value | del(._sim, ._su, ._sa, ._loro, ._ne)) + {embedding: ($v | map(((. / $ne) * $nobj * 10000 | round) / 10000))}
+                                else
+                                    (.value | del(._sim, ._su, ._sa, ._loro, ._ne))
+                                end
+                            ][ ]
+                        else
+                            empty
+                        end
                     end
                 ' < <(cat "$DIR_MEMORIA/$PART_PER_LTD"; echo "$LINEA_TURNO"))
                 if [[ -n "$PER_LTD_ACT" ]]; then
