@@ -56,7 +56,7 @@ DIR_REGISTROS="$DIR/REGISTROS"
 
 # Hipocampo (momento presente), Memoria episodica (1 semana) y Memoria persistente (1 anio)
 HIPOCAMPO="$DIR_MEMORIA/hipocampo.json"
-MAX_HIPOCAMPO="2"
+MAX_HIPOCAMPO="5"
 INDICE_EPISODICA="$DIR_MEMORIA/indice_episodica.json"
 PREFIJO_EPISODICA="episodica"
 INDICE_PERSISTENTE="$DIR_MEMORIA/indice_persistente.json"
@@ -71,6 +71,19 @@ INDICE_MODULOS="$DIR_MEM_MODULOS/indice.json"
 MAX_MODULOS="20"
 TIMEOUT_HERRAMIENTA="20"
 MAX_REINTENTOS="5"
+
+# Adaptadores LoRA locales por demanda
+DIR_LORA="$DIR/LORA"
+DIR_LORA_DATASETS="$DIR_LORA/DATASETS"
+DIR_MEM_LORA="$DIR_MEMORIA/LORA"
+INDICE_LORA="$DIR_MEM_LORA/indice.json"
+DIR_ENTRENAMIENTO="$DIR/../MODELO/ENTRENAMIENTO"
+MODELO_BASE_HF="Qwen/Qwen3.5-2B"
+LORA_BASE="criterio_iautonoma"
+LORA_ESCALA="0.80"
+MAX_LORAS_ACTIVOS="2"
+UMBRAL_LORA="0.45"
+URL_LORA="http://${HOST}:${PUERTO}/lora-adapters"
 
 # Historial de todas las interacciones
 HISTORIAL="$DIR_REGISTROS/historial.log"

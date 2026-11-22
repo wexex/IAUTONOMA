@@ -300,7 +300,6 @@ Parte del alcance experimental de **IAUTONOMA** consiste en caracterizar el comp
 
 | Modo de fallo | Manifestación observable | Causa técnica |
 | :--- | :--- | :--- |
-| **Atenuación de contexto por umbral o ventana** | Pierde continuidad ante consultas ambiguas o sobre hechos antiguos no reforzados. | El LLM carece de estado interno: si un recuerdo decae bajo `0.45`, sale de las cuotas `MAX_HIPOCAMPO`/`MAX_MEMORIA` o no alcanza similitud suficiente en la búsqueda vectorial, queda excluido del prompt. |
 | **Adulación tras corrección (*sycophancy*)** | Ante una crítica o corrección, concede la razón de forma indiscriminada llegando a contradecir hechos o su propia identidad operativa. | El ajuste conversacional base de los modelos compactos prioriza el acuerdo con el usuario sobre la consistencia fáctica cuando detecta desacuerdo. |
 | **Sobreactivación de restricciones base (RLHF)** | Afirma no disponer de acceso al sistema operativo o a memoria persistente pese a tener ambos activos. | Ante errores de ejecución o cuestionamientos del usuario, los reflejos conservadores del alineamiento de fábrica prevalecen sobre las instrucciones del `system` prompt. |
 

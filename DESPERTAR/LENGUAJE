@@ -9,8 +9,32 @@ if [[ -f "$LOG_SERVER" ]]; then
     fi
 fi
 
+cd "$DIR"
+
+ARGS_LORA=( )
+if [[ -d "$DIR_LORA" ]]; then
+    LISTA_LORAS=""
+    for fl in LORA/*.gguf; do
+        if [[ -s "$fl" ]]; then
+            NOM_L="$(basename "$fl" .gguf)"
+            ESC_L="0.0"
+            if [[ "$NOM_L" == "$LORA_BASE" ]]; then
+                ESC_L="${LORA_ESCALA:-1.0}"
+            fi
+            if [[ -n "$LISTA_LORAS" ]]; then
+                LISTA_LORAS+=","
+            fi
+            LISTA_LORAS+="${fl}:${ESC_L}"
+        fi
+    done
+    if [[ -n "$LISTA_LORAS" ]]; then
+        ARGS_LORA=(--lora-scaled "$LISTA_LORAS")
+    fi
+fi
+
 llama-server \
 -m "$MODELO" \
+"${ARGS_LORA[@]}" \
 --host "$HOST" \
 --port "$PUERTO" \
 -c 4096 -n \

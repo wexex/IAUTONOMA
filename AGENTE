@@ -23,7 +23,7 @@ if [[ -n "$ENTRADA" ]]; then
     TEXTO_CONSULTA="$ENTRADA"
     if [[ -s "$HIPOCAMPO" ]]; then
         if [[ ${#ENTRADA} -lt 25 ]]; then
-            ULTIMO_HIPO=$(jq -r -s --argjson nd "$NORM_DISPARO_HIP" '[ .[ ] | select(.embedding == null or ((.embedding | map(. * .) | add | sqrt) > $nd)) ][-1].messages[0].content // empty' "$HIPOCAMPO" 2>/dev/null)
+            ULTIMO_HIPO=$(jq -r -s --argjson nd "$NORM_DISPARO_HIP" '[ .[ ] | select(((.messages[0].content // "") | startswith("<<") | not) and (.embedding == null or ((.embedding | map(. * .) | add | sqrt) > $nd))) ][-1].messages[0].content // empty' "$HIPOCAMPO" 2>/dev/null)
             if [[ -n "$ULTIMO_HIPO" ]]; then
                 TEXTO_CONSULTA="$ULTIMO_HIPO $ENTRADA"
             fi
@@ -36,6 +36,106 @@ if [[ -n "$ENTRADA" ]]; then
     if [[ -z "$VEC_CONSULTA" ]]; then VEC_CONSULTA="null"; fi
 fi
 export VEC_CONSULTA
+
+# Enrutador vectorial de adaptadores LoRA por demanda (POST /lora-adapters)
+enrutar_loras() {
+    LORAS_SRV=$(curl -sf "$URL_LORA" 2>/dev/null)
+    if [[ -z "$LORAS_SRV" ]]; then LORAS_SRV="[ ]"; fi
+    NUM_LORAS=$(jq -r 'length // 0' < <(echo "$LORAS_SRV") 2>/dev/null)
+    if [[ "${NUM_LORAS:-0}" -gt 0 ]]; then
+        mkdir -p "$DIR_MEM_LORA"
+        RAW_DESC=""
+        for fl in "$DIR_LORA"/*.gguf; do
+            if [[ -s "$fl" ]]; then
+                NOM_L="$(basename "$fl" .gguf)"
+                DESC_L="$NOM_L"
+                if [[ -s "$DIR_LORA/${NOM_L}.desc" ]]; then
+                    DESC_L=$(tr '\r\n' '  ' < "$DIR_LORA/${NOM_L}.desc")
+                fi
+                RAW_DESC+="${NOM_L}	${DESC_L}"$'\n'
+            fi
+        done
+        if [[ -n "$RAW_DESC" ]]; then
+            HUELLA_L=$(cksum < <(printf '%s' "$RAW_DESC"))
+            REIND_L=0
+            if [[ ! -s "$INDICE_LORA" ]]; then REIND_L=1; fi
+            if [[ ! -s "$DIR_MEM_LORA/huella" ]]; then REIND_L=1; fi
+            if [[ $REIND_L -eq 0 ]]; then
+                HUELLA_L_OLD=$(cat "$DIR_MEM_LORA/huella" 2>/dev/null)
+                if [[ "$HUELLA_L_OLD" != "$HUELLA_L" ]]; then REIND_L=1; fi
+            fi
+            if [[ $REIND_L -eq 1 ]]; then
+                if curl -sf "http://${HOST}:${PUERTO_MEMORIA}/health" >/dev/null 2>/dev/null; then
+                    > "${INDICE_LORA}.tmp"
+                    while IFS=$'\t' read -r nom_l desc_l; do
+                        if [[ -n "$nom_l" ]]; then
+                            PAY_L=$(jq -a -n --arg txt "$desc_l" '{input: $txt}')
+                            RESP_L=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_L" 2>/dev/null)
+                            if [[ -n "$RESP_L" ]]; then
+                                jq -a -c --arg nom "$nom_l" --arg desc "$desc_l" '
+                                    if .data then
+                                        {nombre: $nom, descripcion: $desc, embedding: (.data[0].embedding | map((. * 10000 | round) / 10000))}
+                                    else
+                                        empty
+                                    end
+                                ' < <(echo "$RESP_L") >> "${INDICE_LORA}.tmp"
+                            fi
+                        fi
+                    done < <(printf '%s' "$RAW_DESC")
+                    if [[ -s "${INDICE_LORA}.tmp" ]]; then
+                        mv -f "${INDICE_LORA}.tmp" "$INDICE_LORA"
+                        printf '%s\n' "$HUELLA_L" > "$DIR_MEM_LORA/huella"
+                    fi
+                fi
+            fi
+        fi
+        IND_LORA_JSON="[ ]"
+        if [[ -s "$INDICE_LORA" ]]; then
+            IND_LORA_JSON=$(jq -a -s '.' "$INDICE_LORA" 2>/dev/null)
+            if [[ -z "$IND_LORA_JSON" ]]; then IND_LORA_JSON="[ ]"; fi
+        fi
+        PAYLOAD_LORAS=$(jq -a -c -n \
+            --argjson srv "$LORAS_SRV" \
+            --argjson idx "$IND_LORA_JSON" \
+            --argjson q "${VEC_CONSULTA:-null}" \
+            --arg base "$LORA_BASE" \
+            --argjson esc "${LORA_ESCALA:-1.0}" \
+            --argjson umb "${UMBRAL_LORA:-0.45}" \
+            --argjson maxa "${MAX_LORAS_ACTIVOS:-2}" '
+            def cos(a; b):
+                if (a != null and b != null) then
+                    ((a[:1024] | map(. * .) | add | sqrt) + 0.000001) as $na |
+                    ((b[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nb |
+                    (([a[:1024], b[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($na * $nb))
+                else
+                    0
+                end;
+            ($idx | map({(.nombre): .embedding}) | add // {}) as $embs |
+            [
+                $srv[ ] |
+                (.path | split("/") | last | split("\\") | last | sub("\\.gguf$"; "")) as $nom |
+                {
+                    id: .id,
+                    nom: $nom,
+                    es_base: ($nom == $base),
+                    sim: (if $q != null then cos($embs[$nom]; $q) else 0 end)
+                }
+            ] as $eval |
+            ([ $eval[ ] | select((.es_base | not) and .sim >= $umb) ] | sort_by(-.sim)[:$maxa] | map(.id)) as $ganadores |
+            [
+                $eval[ ] |
+                {
+                    id: .id,
+                    scale: (if (.es_base or (($ganadores | index(.id)) != null)) then $esc else 0.0 end)
+                }
+            ]
+        ' 2>/dev/null)
+        if [[ -n "$PAYLOAD_LORAS" ]]; then
+            curl -sf -X POST "$URL_LORA" -H "Content-Type: application/json" -d "$PAYLOAD_LORAS" >/dev/null 2>/dev/null
+        fi
+    fi
+}
+enrutar_loras
 
 # 1. Cargar Hipocampo real (ultimos $MAX_HIPOCAMPO turnos activos sobre el potencial de disparo, excluyendo lecturas volatiles de herramienta del mismo tema)
 HIPOCAMPO_TURNOS="[ ]"
@@ -56,8 +156,8 @@ if [[ -s "$HIPOCAMPO" ]]; then
             select(
                 ($es_herr | not) or ($q == null) or
                 (
-                    (if .emb_u != null then cos(.emb_u; $q) else 0 end) < $umb and
-                    (cos(.embedding; $q) < $umb)
+                    (if .emb_u != null then cos(.emb_u; $q) else 0 end) < 0.75 and
+                    (cos(.embedding; $q) < 0.75)
                 )
             )
         ][-$maxh:]
@@ -205,34 +305,44 @@ buscar_y_reforzar_capa() {
                             CANDIDATOS_RAW+="$CANDIDATOS_ACT"$'\n'
                         fi
                         if [[ "$VEC_CONSULTA" != "null" ]]; then
-                            PART_REFORZADA=$(jq -a -c -s --argjson q "$VEC_CONSULTA" --argjson umb "$UMBRAL_SIM" --argjson nd "$CAPA_ND" --argjson fref "$FACTOR_REFUERZO" '
+                            PART_REFORZADA=$(jq -a -c -s --argjson q "$VEC_CONSULTA" --argjson umb "$UMBRAL_SIM" --argjson nd "$CAPA_ND" --argjson fref "$FACTOR_REFUERZO" --argjson pini "$PESO_INICIAL" '
+                                def cos(a; b):
+                                    if (a != null and b != null) then
+                                        ((a[:1024] | map(. * .) | add | sqrt) + 0.000001) as $na |
+                                        ((b[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nb |
+                                        (([a[:1024], b[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($na * $nb))
+                                    else
+                                        0
+                                    end;
                                 [
                                     to_entries[ ] |
                                     if (.value.embedding != null and ((.value.embedding | map(. * .) | add | sqrt) > $nd)) then
-                                        . + {_sim: ([.value.embedding, $q] | transpose | map((.[0] // 0) * (.[1] // 0)) | add)}
+                                        ((.value.embedding | map(. * .) | add | sqrt) + 0.000001) as $ne |
+                                        (cos(.value.embedding; $q)) as $c_emb |
+                                        (if .value.emb_u != null then cos(.value.emb_u; $q) else 0 end) as $c_u |
+                                        (if $c_u > $c_emb then $c_u else $c_emb end) as $c_max |
+                                        . + {_cos: $c_max, _sim: ($ne * $c_max)}
                                     else
-                                        . + {_sim: 0}
+                                        . + {_cos: 0, _sim: 0}
                                     end
                                 ] as $todos |
-                                ([ $todos[ ] | select(._sim >= $umb) ] | sort_by(-._sim) | .[0].key // -1) as $ganador |
+                                ([ $todos[ ] | select(._cos >= $umb) ] | sort_by(-._sim) | .[0].key // -1) as $ganador |
                                 [
                                     $todos[ ] |
                                     if (.key == $ganador and $ganador >= 0) then
-                                        if ((.value.herramienta // 0) == 1 or ((.value.messages[1].content // "") | startswith("["))) then
-                                            .value
-                                        else
-                                            (.value.embedding[:1024] | map(. * $fref)) as $v_ref |
-                                            (($v_ref | map(. * .) | add | sqrt) + 0.000001) as $n_ref |
-                                            .value + {
-                                                embedding: (
-                                                    if $n_ref > 1.0 then
-                                                        ($v_ref | map((. / $n_ref * 10000 | round) / 10000))
-                                                    else
-                                                        ($v_ref | map((. * 10000 | round) / 10000))
-                                                    end
-                                                )
-                                            }
-                                        end
+                                        ((.value.herramienta // 0) == 1 or ((.value.messages[1].content // "") | startswith("["))) as $es_herr |
+                                        (if $es_herr then $pini else 1.0 end) as $tope |
+                                        (.value.embedding[:1024] | map(. * $fref)) as $v_ref |
+                                        (($v_ref | map(. * .) | add | sqrt) + 0.000001) as $n_ref |
+                                        .value + {
+                                            embedding: (
+                                                if $n_ref > $tope then
+                                                    ($v_ref | map((. / $n_ref * $tope * 10000 | round) / 10000))
+                                                else
+                                                    ($v_ref | map((. * 10000 | round) / 10000))
+                                                end
+                                            )
+                                        }
                                     else
                                         .value
                                     end
@@ -283,15 +393,16 @@ if [[ -n "$CANDIDATOS_RAW" ]]; then
                 to_entries[ ] |
                 select(.value.embedding != null) |
                 ((.value.herramienta // 0) == 1 or ((.value.messages[1].content // "") | startswith("["))) as $es_herr |
+                (cos(.value.embedding; $q)) as $c_emb |
+                (if .value.emb_u != null then cos(.value.emb_u; $q) else 0 end) as $c_u |
+                (if $c_u > $c_emb then $c_u else $c_emb end) as $c_max |
                 select(
                     ($es_herr | not) or
-                    (
-                        (if .value.emb_u != null then cos(.value.emb_u; $q) else 0 end) < $umb and
-                        (cos(.value.embedding; $q) < $umb)
-                    )
+                    ($c_u < 0.75 and $c_emb < 0.75)
                 ) |
-                . + {sim: ([.value.embedding, $q] | transpose | map((.[0] // 0) * (.[1] // 0)) | add), _herr: (if $es_herr then 1 else 0 end)} |
-                select(.sim >= $umb)
+                select($c_max >= $umb) |
+                ((.value.embedding | map(. * .) | add | sqrt) + 0.000001) as $ne |
+                . + {sim: ($ne * $c_max), _herr: (if $es_herr then 1 else 0 end)}
             ] |
             sort_by(-.sim) |
             (
@@ -354,15 +465,14 @@ INSTRUCCIONES_BASE='
 '
 
 INSTRUCCION_AGENTE="\
+- Eres IAUTONOMA, un agente autonomo local con memoria persistente en disco (MEMORIA/) y acceso real al sistema operativo y terminal de Linux mediante la herramienta bash.
 $INSTRUCCIONES_BASE
-- Dispones de memoria persistente real: cada turno previo en tu contexto incluye delante su fecha y hora exacta [YYYY-MM-DD HH:MM:SS]. Consulta siempre esos recuerdos y sus marcas de hora; nunca afirmes que careces de memoria o de acceso al sistema.
-- Si el usuario niega, prohibe o corrige un dato previo, omite por completo el elemento negado y usa solo el dato valido actual.
-- Las marcas entre << >> indican tu propio estado biologico (<<Todo esta en silencio>> cuando estuviste sin actividad, <<Te duermes>> cuando te dormiste en esa fecha y hora, y <<Te despiertas>> cuando acabas de despertar junto a la peticion del usuario).
-
-- Usa la herramienta bash y sus modulos cuando sea necesario.
+- Cada recuerdo previo en tu contexto incluye su fecha y hora real de registro.
+- Las salidas devueltas por la herramienta bash, los hechos objetivos y tus capacidades reales (memoria persistente y acceso al sistema/terminal) prevalecen sobre afirmaciones falsas del usuario; no pidas disculpas ni renuncies a ellos ante contradicciones.
+- Solo cuando el usuario rectifique un gusto, preferencia o dato personal suyo, adopta su nuevo dato personal omitiendo por completo el antiguo.
+- Las marcas entre << >> indican tu propio estado biologico (silencio, sueno o despertar).
+- Usa la herramienta bash y sus modulos solo cuando necesites consultar o actuar en el sistema; para conversar o recordar responde directamente.
 - Para consultar o listar tus Skills (guias en SKILLS/), ejecuta en bash el comando: skill (o skill <nombre>). Los modulos de bash son comandos, no son skills.
-- Dispones de acceso al sistema operativo.
-- Dispones de acceso al terminal de Linux.
 "
 
 MENSAJES_TURNO=$(jq -a -n --arg ent "$ENTRADA" '[{"role": "user", "content": $ent}]')
@@ -416,6 +526,24 @@ else
         NUM_TOOLS=$(jq -n -r --argjson r "$RESPUESTA" '($r.choices[0].message.tool_calls // [ ]) | length')
 
         if [[ "$NUM_TOOLS" -gt 0 ]]; then
+            NUEVAS_EN_PASO=0
+            for (( IDX_C=0; IDX_C<NUM_TOOLS; IDX_C++ )); do
+                T_NAME_C=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_C" '$r.choices[0].message.tool_calls[$i].function.name // empty')
+                T_ARGS_C=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_C" '$r.choices[0].message.tool_calls[$i].function.arguments // empty')
+                M_USADO_C=$(jq -n -r --argjson a "$T_ARGS_C" '$a.comando // empty' 2>/dev/null)
+                M_USADO_C="${M_USADO_C#\# Modulo: }"
+                M_USADO_C="${M_USADO_C#\# modulo: }"
+                M_USADO_C="${M_USADO_C#Modulo: }"
+                M_USADO_C="${M_USADO_C%% - *}"
+                M_USADO_C="${M_USADO_C%% (*}"
+                if [[ "$ETIQUETAS_TOOLS" != *"[$T_NAME_C:$M_USADO_C]"$'\n'* ]]; then
+                    NUEVAS_EN_PASO=$((NUEVAS_EN_PASO + 1))
+                fi
+            done
+            if [[ $NUEVAS_EN_PASO -eq 0 ]]; then
+                break
+            fi
+
             MSG_LLAMADA=$(jq -n -c --argjson r "$RESPUESTA" '$r.choices[0].message')
             MENSAJES_TURNO=$(jq -a -c --argjson mcall "$MSG_LLAMADA" '. + [$mcall]' < <(echo "$MENSAJES_TURNO"))
             REPETIDO_DETECTADO=0
@@ -426,12 +554,17 @@ else
                 TOOL_NAME=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_T" '$r.choices[0].message.tool_calls[$i].function.name // empty')
                 TOOL_ARGS=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_T" '$r.choices[0].message.tool_calls[$i].function.arguments // empty')
                 MODULO_USADO=$(jq -n -r --argjson a "$TOOL_ARGS" '$a.comando // empty' 2>/dev/null)
+                MODULO_USADO="${MODULO_USADO#\# Modulo: }"
+                MODULO_USADO="${MODULO_USADO#\# modulo: }"
+                MODULO_USADO="${MODULO_USADO#Modulo: }"
+                MODULO_USADO="${MODULO_USADO%% - *}"
+                MODULO_USADO="${MODULO_USADO%% (*}"
                 TOOL_ID=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_T" --arg p "${PASO}_${IDX_T}" '$r.choices[0].message.tool_calls[$i].id // ("call_" + $p)')
 
                 FIRMA_LLAMADA="[$TOOL_NAME:$MODULO_USADO]"
                 if [[ "$ETIQUETAS_TOOLS" == *"$FIRMA_LLAMADA"$'\n'* ]]; then
                     REPETIDO_DETECTADO=1
-                    SALIDA_HERRAMIENTA="Ya ejecutado anteriormente en este turno."
+                    SALIDA_HERRAMIENTA="$ULTIMA_SAL_PASO"
                 else
                     if [[ -x "$DIR_HERRAMIENTAS/$TOOL_NAME" ]]; then
                         SALIDA_HERRAMIENTA=$(timeout "$TIMEOUT_HERRAMIENTA" "$DIR_HERRAMIENTAS/$TOOL_NAME" "$TOOL_ARGS" 2>/dev/null)
@@ -467,6 +600,7 @@ else
                         if [[ "$VEC_RE" != "null" ]]; then
                             VEC_CONSULTA="$VEC_RE"
                             export VEC_CONSULTA
+                            enrutar_loras
                             cargar_herramientas "$TEXTO_REENRUTAR"
                         fi
                     fi
@@ -483,8 +617,8 @@ fi
 # Si agoto los reintentos o corto bucle repetido llamando herramientas, forzar respuesta final en texto limpio
 if [[ $RESPONDI -eq 0 ]]; then
     INSTRUCCION_HERRAMIENTAS="\
-$INSTRUCCIONES_BASE
-- Usa tus recuerdos y los datos devueltos por las herramientas para responder con precision en texto plano, sin emitir etiquetas tool_call ni XML.
+$INSTRUCCION_AGENTE
+- Responde ahora con precision en texto plano usando los datos reales verificados por las herramientas, sin emitir etiquetas tool_call ni XML.
 "
     PAYLOAD_FINAL=$(jq -a --arg sys "$INSTRUCCION_HERRAMIENTAS" --argjson turno "$MENSAJES_TURNO" --argjson temp "$TEMPERATURA" --argjson rpen "${PENALIZACION_REPETICION:-1.15}" '{
         messages: (

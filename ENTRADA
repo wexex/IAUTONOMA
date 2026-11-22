@@ -25,7 +25,7 @@ if [[ $MODO_INTERNO -eq 0 ]]; then
     if ! curl -sf "http://${HOST}:${PUERTO}/health" >/dev/null 2>/dev/null; then
         ACABA_DE_DESPERTAR=1
         echo "..."
-        setsid -f "$DIR/DESPERTAR/LENGUAJE" >/dev/null 2>/dev/null
+        true < <(setsid "$DIR/DESPERTAR/LENGUAJE" </dev/null >/dev/null 2>/dev/null)
         INTENTO=0
         while [[ $INTENTO -lt 120 ]]; do
             sleep 0.5
@@ -36,7 +36,7 @@ if [[ $MODO_INTERNO -eq 0 ]]; then
 
     if ! curl -sf "http://${HOST}:${PUERTO_MEMORIA}/health" >/dev/null 2>/dev/null; then
         echo "..."
-        setsid -f "$DIR/DESPERTAR/MEMORIA" >/dev/null 2>/dev/null
+        true < <(setsid "$DIR/DESPERTAR/MEMORIA" </dev/null >/dev/null 2>/dev/null)
         INTENTO=0
         while [[ $INTENTO -lt 120 ]]; do
             sleep 0.5
@@ -55,7 +55,7 @@ if [[ $MODO_INTERNO -eq 0 ]]; then
         fi
     fi
     if [[ $ABURRIMIENTO_VIVO -eq 0 ]]; then
-        setsid -f "$DIR/DESPERTAR/ABURRIMIENTO" >/dev/null 2>/dev/null
+        true < <(setsid "$DIR/DESPERTAR/ABURRIMIENTO" </dev/null >/dev/null 2>/dev/null)
     fi
 
     if [[ $ACABA_DE_DESPERTAR -eq 1 ]]; then
@@ -127,6 +127,7 @@ guardar_en_capa() {
                     (($umb + $uref) / 2) as $u_med |
                     (($uref + 1.0) / 2) as $u_loro |
                     (($fref - 1.0) / 2) as $d_min |
+                    (cos($nuevo.emb_u; $nuevo.emb_a)) as $nua |
                     (
                         [
                             $items[ ] |
@@ -135,15 +136,17 @@ guardar_en_capa() {
                                 (($v | map(. * .) | add | sqrt) + 0.000001) as $ne |
                                 (cos(.emb_u; $nuevo.emb_u)) as $su |
                                 (cos(.emb_a; $nuevo.emb_a)) as $sa |
+                                (cos(.emb_u; $nuevo.emb_a)) as $sua |
                                 . + {
                                     _sim: (([$v, $nuevo.embedding[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($ne * $nq)),
                                     _su: $su,
                                     _sa: $sa,
-                                    _loro: (if ($sa != null and $su != null and $sa >= $u_loro and $su < $uref) then 1 else 0 end),
+                                    _sua: $sua,
+                                    _loro: (if ($sa != null and $su != null and $sa >= $u_loro and $su < $u_med) then 1 else 0 end),
                                     _ne: $ne
                                 }
                             else
-                                . + {_sim: 0, _su: null, _sa: null, _loro: 0, _ne: 0}
+                                . + {_sim: 0, _su: null, _sa: null, _sua: null, _loro: 0, _ne: 0}
                             end
                         ]
                     ) as $marcados |
@@ -168,7 +171,7 @@ guardar_en_capa() {
                         ) as $n_ref |
                         ($u_nuevo | map((. * $n_ref * 10000 | round) / 10000)) as $emb_final |
                         (
-                            [ $marcados[ ] | select(._sim < $uref or ._loro == 1) | del(._sim, ._su, ._sa, ._loro, ._ne) ] +
+                            [ $marcados[ ] | select(._sim < $uref or ._loro == 1) | del(._sim, ._su, ._sa, ._sua, ._loro, ._ne) ] +
                             [($nuevo + {herramienta: $es_herr, embedding: $emb_final})]
                         )[ ]
                     else
@@ -176,18 +179,14 @@ guardar_en_capa() {
                             $marcados | to_entries[ ] |
                             select(
                                 (((.value.messages[0].content // "") | startswith("<<")) | not) and
+                                .value._sim >= $umb and .value._sim < $uref and
+                                ($nua == null or .value._sua == null or $nua > .value._sua) and
                                 (
-                                    .value._loro == 1 or
-                                    (
-                                        .value._sim >= $umb and .value._sim < $uref and
-                                        (
-                                            if (.value._sa != null and .value._su != null) then
-                                                ((.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min) or (.value._su >= $u_med and (.value._su - .value._sa) >= ($d_min * 2)))
-                                            else
-                                                (.value._sim >= $u_med)
-                                            end
-                                        )
-                                    )
+                                    if (.value._sa != null and .value._su != null) then
+                                        ((.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min) or (.value._su >= $u_med and (.value._su - .value._sa) >= ($d_min * 2)))
+                                    else
+                                        (.value._sim >= $u_med)
+                                    end
                                 )
                             )
                         ] | sort_by(-.value._sim) | .[0].key // -1) as $k_ltd |
@@ -205,9 +204,9 @@ guardar_en_capa() {
                                 if ($k_ltd >= 0 and .key == $k_ltd and .value._ne > $nobj) then
                                     (.value.embedding[:1024]) as $v |
                                     (.value._ne) as $ne |
-                                    (.value | del(._sim, ._su, ._sa, ._loro, ._ne)) + {embedding: ($v | map(((. / $ne) * $nobj * 10000 | round) / 10000))}
+                                    (.value | del(._sim, ._su, ._sa, ._sua, ._loro, ._ne)) + {embedding: ($v | map(((. / $ne) * $nobj * 10000 | round) / 10000))}
                                 else
-                                    (.value | del(._sim, ._su, ._sa, ._loro, ._ne))
+                                    (.value | del(._sim, ._su, ._sa, ._sua, ._loro, ._ne))
                                 end
                             ] + [$nuevo_fin]
                         )[ ]
@@ -319,8 +318,8 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
     NORM_OBJ_MEM=$(jq -n --argjson u "$UMBRAL_SIM" --argjson p "$PESO_INICIAL" --argjson h "$H_MEM" --argjson c "$H_CAS" '$u * (((($p / $u) | log) * ($c / $h)) | exp)')
     NORM_OBJ_PER=$(jq -n --argjson u "$UMBRAL_SIM" --argjson h "$H_PER" --argjson c "$H_CAS" '$u * ((((1.0 / $u) | log) * ($c / $h)) | exp)')
 
-    # 1. Actualizar Hipocampo real con plasticidad LTP / LTD de doble vector (ultimos $MAX_HIPOCAMPO turnos del momento presente)
-    HIPO_NUEVO=$(jq -a -c -s --argjson maxh "$MAX_HIPOCAMPO" --argjson umb "$UMBRAL_SIM" --argjson uref "$UMBRAL_REFUERZO" --argjson fref "$FACTOR_REFUERZO" --argjson nobj "$NORM_OBJ_HIP" '
+    # 1. Actualizar Hipocampo real con plasticidad LTP / LTD de doble vector (OLVIDO gestiona su decaimiento de 24h)
+    HIPO_NUEVO=$(jq -a -c -s --argjson maxp "$MAX_PARTICION" --argjson umb "$UMBRAL_SIM" --argjson uref "$UMBRAL_REFUERZO" --argjson fref "$FACTOR_REFUERZO" --argjson nobj "$NORM_OBJ_HIP" '
         def cos(a; b):
             if (a != null and b != null) then
                 ((a[:1024] | map(. * .) | add | sqrt) + 0.000001) as $na |
@@ -332,13 +331,14 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
         (.[0:-1]) as $items |
         (.[-1]) as $nuevo |
         if ($nuevo.embedding == null or ($items | length) == 0) then
-            ($items + [$nuevo])[-$maxh:][ ]
+            ($items + [$nuevo])[-$maxp:][ ]
         else
             (($nuevo.embedding[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nq |
             ($nuevo.embedding[:1024] | map(. / $nq)) as $u_nuevo |
             (($umb + $uref) / 2) as $u_med |
             (($uref + 1.0) / 2) as $u_loro |
             (($fref - 1.0) / 2) as $d_min |
+            (cos($nuevo.emb_u; $nuevo.emb_a)) as $nua |
             (
                 [
                     $items[ ] |
@@ -347,15 +347,17 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                         (($v | map(. * .) | add | sqrt) + 0.000001) as $ne |
                         (cos(.emb_u; $nuevo.emb_u)) as $su |
                         (cos(.emb_a; $nuevo.emb_a)) as $sa |
+                        (cos(.emb_u; $nuevo.emb_a)) as $sua |
                         . + {
                             _sim: (([$v, $nuevo.embedding[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($ne * $nq)),
                             _su: $su,
                             _sa: $sa,
-                            _loro: (if ($sa != null and $su != null and $sa >= $u_loro and $su < $uref) then 1 else 0 end),
+                            _sua: $sua,
+                            _loro: (if ($sa != null and $su != null and $sa >= $u_loro and $su < $u_med) then 1 else 0 end),
                             _ne: $ne
                         }
                     else
-                        . + {_sim: 0, _su: null, _sa: null, _loro: 0, _ne: 0}
+                        . + {_sim: 0, _su: null, _sa: null, _sua: null, _loro: 0, _ne: 0}
                     end
                 ]
             ) as $marcados |
@@ -380,26 +382,22 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                 ) as $n_ref |
                 ($u_nuevo | map((. * $n_ref * 10000 | round) / 10000)) as $emb_final |
                 (
-                    [ $marcados[ ] | select(._sim < $uref or ._loro == 1) | del(._sim, ._su, ._sa, ._loro, ._ne) ] +
+                    [ $marcados[ ] | select(._sim < $uref or ._loro == 1) | del(._sim, ._su, ._sa, ._sua, ._loro, ._ne) ] +
                     [($nuevo + {herramienta: $es_herr, embedding: $emb_final})]
-                )[-$maxh:][ ]
+                )[-$maxp:][ ]
             else
                 ([
                     $marcados | to_entries[ ] |
                     select(
                         (((.value.messages[0].content // "") | startswith("<<")) | not) and
+                        .value._sim >= $umb and .value._sim < $uref and
+                        ($nua == null or .value._sua == null or $nua > .value._sua) and
                         (
-                            .value._loro == 1 or
-                            (
-                                .value._sim >= $umb and .value._sim < $uref and
-                                (
-                                    if (.value._sa != null and .value._su != null) then
-                                        ((.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min) or (.value._su >= $u_med and (.value._su - .value._sa) >= ($d_min * 2)))
-                                    else
-                                        (.value._sim >= $u_med)
-                                    end
-                                )
-                            )
+                            if (.value._sa != null and .value._su != null) then
+                                ((.value._sa >= $u_med and (.value._sa - .value._su) >= $d_min) or (.value._su >= $u_med and (.value._su - .value._sa) >= ($d_min * 2)))
+                            else
+                                (.value._sim >= $u_med)
+                            end
                         )
                     )
                 ] | sort_by(-.value._sim) | .[0].key // -1) as $k_ltd |
@@ -417,12 +415,12 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                         if ($k_ltd >= 0 and .key == $k_ltd and .value._ne > $nobj) then
                             (.value.embedding[:1024]) as $v |
                             (.value._ne) as $ne |
-                            (.value | del(._sim, ._su, ._sa, ._loro, ._ne)) + {embedding: ($v | map(((. / $ne) * $nobj * 10000 | round) / 10000))}
+                            (.value | del(._sim, ._su, ._sa, ._sua, ._loro, ._ne)) + {embedding: ($v | map(((. / $ne) * $nobj * 10000 | round) / 10000))}
                         else
-                            (.value | del(._sim, ._su, ._sa, ._loro, ._ne))
+                            (.value | del(._sim, ._su, ._sa, ._sua, ._loro, ._ne))
                         end
                     ] + [$nuevo_fin]
-                )[-$maxh:][ ]
+                )[-$maxp:][ ]
             end
         end
     ' < <(cat "$HIPOCAMPO"; echo "$LINEA_TURNO"))

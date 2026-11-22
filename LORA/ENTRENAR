@@ -1,0 +1,66 @@
+#!/bin/bash
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/CONFIG"
+
+NOMBRE="$1"
+EPOCAS="${2:-3}"
+RANGO="${3:-4}"
+ALFA="${4:-16}"
+
+if [[ -z "$NOMBRE" ]]; then
+    echo "Uso: ./LORA/ENTRENAR <nombre_dataset> [epocas] [rango] [alfa]"
+    echo "Datasets disponibles en $DIR_LORA_DATASETS:"
+    for ds in "$DIR_LORA_DATASETS"/*.jsonl; do
+        if [[ -s "$ds" ]]; then
+            echo "- $(basename "$ds" .jsonl)"
+        fi
+    done
+    exit 1
+fi
+
+ARCH_DATASET="$DIR_LORA_DATASETS/${NOMBRE}.jsonl"
+ARCH_SALIDA="$DIR_LORA/${NOMBRE}.gguf"
+
+if [[ ! -s "$ARCH_DATASET" ]]; then
+    echo "Error: no existe el dataset $ARCH_DATASET"
+    exit 1
+fi
+
+PY_BIN="$DIR_ENTRENAMIENTO/venv/Scripts/python.exe"
+if [[ ! -x "$PY_BIN" ]]; then
+    PY_BIN="$DIR_ENTRENAMIENTO/venv/bin/python"
+fi
+if [[ ! -x "$PY_BIN" ]]; then
+    echo "Error: no existe entorno Python en $DIR_ENTRENAMIENTO/venv"
+    exit 1
+fi
+
+SCRIPT_PY="$DIR_ENTRENAMIENTO/entrenar_lora.py"
+if [[ ! -s "$SCRIPT_PY" ]]; then
+    echo "Error: no existe $SCRIPT_PY"
+    exit 1
+fi
+
+# Liberar RAM deteniendo servidores activos antes de entrenar en CPU
+if command -v taskkill >/dev/null 2>/dev/null; then
+    taskkill //F //IM llama-server.exe >/dev/null 2>/dev/null
+elif command -v pkill >/dev/null 2>/dev/null; then
+    pkill -f "llama-server" >/dev/null 2>/dev/null
+fi
+
+RUTA_SCRIPT="$SCRIPT_PY"
+RUTA_DS="$ARCH_DATASET"
+RUTA_OUT="$ARCH_SALIDA"
+if command -v cygpath >/dev/null 2>/dev/null; then
+    RUTA_SCRIPT="$(cygpath -w "$SCRIPT_PY")"
+    RUTA_DS="$(cygpath -w "$ARCH_DATASET")"
+    RUTA_OUT="$(cygpath -w "$ARCH_SALIDA")"
+fi
+
+"$PY_BIN" "$RUTA_SCRIPT" \
+    --dataset "$RUTA_DS" \
+    --out "$RUTA_OUT" \
+    --base-model "$MODELO_BASE_HF" \
+    --rank "$RANGO" \
+    --alpha "$ALFA" \
+    --epochs "$EPOCAS"
