@@ -17,24 +17,16 @@ NORM_DISPARO_HIP=$(jq -n --argjson u "$UMBRAL_SIM" --argjson p "$PESO_INICIAL" -
 NORM_DISPARO_MEM=$(jq -n --argjson u "$UMBRAL_SIM" --argjson p "$PESO_INICIAL" --argjson h "$H_MEM" --argjson c "$H_CAS" '($u * (((($p / $u) | log) * ($c / $h)) | exp)) + 0.001')
 NORM_DISPARO_PER=$(jq -n --argjson u "$UMBRAL_SIM" --argjson h "$H_PER" --argjson c "$H_CAS" '($u * ((((1.0 / $u) | log) * ($c / $h)) | exp)) + 0.001')
 
-# Vectorizar consulta una sola vez (apoyandose en el Hipocampo activo si la frase actual es corta)
+# Vectorizar consulta limpia (sin filtros fijos de longitud; respaldo vectorial por hipocampo si no dispara recuerdos)
 VEC_CONSULTA="null"
 if [[ -n "$ENTRADA" ]]; then
-    TEXTO_CONSULTA="$ENTRADA"
-    if [[ -s "$HIPOCAMPO" ]]; then
-        if [[ ${#ENTRADA} -lt 25 ]]; then
-            ULTIMO_HIPO=$(jq -r -s --argjson nd "$NORM_DISPARO_HIP" '[ .[ ] | select(((.messages[0].content // "") | startswith("<<") | not) and (.embedding == null or ((.embedding | map(. * .) | add | sqrt) > $nd))) ][-1].messages[0].content // empty' "$HIPOCAMPO" 2>/dev/null)
-            if [[ -n "$ULTIMO_HIPO" ]]; then
-                TEXTO_CONSULTA="$ULTIMO_HIPO $ENTRADA"
-            fi
-        fi
-    fi
-    PAYLOAD_EMB=$(jq -a -n --arg txt "$TEXTO_CONSULTA" '{input: $txt}')
+    PAYLOAD_EMB=$(jq -a -n --arg txt "$ENTRADA" '{input: $txt}')
     RESP_EMB=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAYLOAD_EMB")
     if [[ -z "$RESP_EMB" ]]; then RESP_EMB="{}"; fi
     VEC_CONSULTA=$(jq -c 'if .data then (.data[0].embedding | map((. * 10000 | round) / 10000)) else null end' < <(echo "$RESP_EMB"))
     if [[ -z "$VEC_CONSULTA" ]]; then VEC_CONSULTA="null"; fi
 fi
+VEC_PURO="$VEC_CONSULTA"
 export VEC_CONSULTA
 
 # Enrutador vectorial de adaptadores LoRA por demanda (POST /lora-adapters)
@@ -135,37 +127,8 @@ enrutar_loras() {
         fi
     fi
 }
-enrutar_loras
 
-# 1. Cargar Hipocampo real (ultimos $MAX_HIPOCAMPO turnos activos sobre el potencial de disparo, excluyendo lecturas volatiles de herramienta del mismo tema)
-HIPOCAMPO_TURNOS="[ ]"
-if [[ -s "$HIPOCAMPO" ]]; then
-    HIPOCAMPO_TURNOS=$(jq -a -s --argjson maxh "$MAX_HIPOCAMPO" --argjson nd "$NORM_DISPARO_HIP" --argjson q "${VEC_CONSULTA:-null}" --argjson umb "$UMBRAL_SIM" '
-        def cos(a; b):
-            if (a != null and b != null) then
-                ((a[:1024] | map(. * .) | add | sqrt) + 0.000001) as $na |
-                ((b[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nb |
-                (([a[:1024], b[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($na * $nb))
-            else
-                0
-            end;
-        [
-            .[ ] |
-            select(.embedding == null or ((.embedding | map(. * .) | add | sqrt) > $nd)) |
-            ((.herramienta // 0) == 1 or ((.messages[1].content // "") | startswith("["))) as $es_herr |
-            select(
-                ($es_herr | not) or ($q == null) or
-                (
-                    (if .emb_u != null then cos(.emb_u; $q) else 0 end) < 0.75 and
-                    (cos(.embedding; $q) < 0.75)
-                )
-            )
-        ][-$maxh:]
-    ' "$HIPOCAMPO" 2>/dev/null)
-    if [[ -z "$HIPOCAMPO_TURNOS" ]]; then HIPOCAMPO_TURNOS="[ ]"; fi
-fi
-
-# 2. Recordar y reforzar en Memoria Persistente y Memoria Episodica (ambas particionadas Top-2)
+# 1. Recordar y reforzar en Memoria Persistente y Memoria Episodica (ambas particionadas Top-2)
 RECUERDOS_TURNOS="[ ]"
 CANDIDATOS_RAW=""
 
@@ -276,6 +239,7 @@ buscar_y_reforzar_capa() {
     CAPA_IND="$1"
     PUEDE_ASCENDER="$2"
     CAPA_ND="$3"
+    APLICAR_REF="${4:-1}"
 
     if [[ -s "$CAPA_IND" ]]; then
         PARTICIONES_BUSCAR=$(jq -r -s --arg ent "$ENTRADA" --argjson q "${VEC_CONSULTA:-null}" --argjson umb "$UMBRAL_SIM" '
@@ -305,6 +269,7 @@ buscar_y_reforzar_capa() {
                             CANDIDATOS_RAW+="$CANDIDATOS_ACT"$'\n'
                         fi
                         if [[ "$VEC_CONSULTA" != "null" ]]; then
+                            if [[ "$APLICAR_REF" == "1" ]]; then
                             PART_REFORZADA=$(jq -a -c -s --argjson q "$VEC_CONSULTA" --argjson umb "$UMBRAL_SIM" --argjson nd "$CAPA_ND" --argjson fref "$FACTOR_REFUERZO" --argjson pini "$PESO_INICIAL" '
                                 def cos(a; b):
                                     if (a != null and b != null) then
@@ -364,6 +329,7 @@ buscar_y_reforzar_capa() {
                                     fi
                                 fi
                             fi
+                            fi
                         fi
                     fi
                 fi
@@ -372,11 +338,90 @@ buscar_y_reforzar_capa() {
     fi
 }
 
-buscar_y_reforzar_capa "$INDICE_PERSISTENTE" "0" "$NORM_DISPARO_PER"
-buscar_y_reforzar_capa "$INDICE_EPISODICA" "1" "$NORM_DISPARO_MEM"
+filtrar_recuerdos() {
+    RECUERDOS_TURNOS="[ ]"
+    if [[ -n "$CANDIDATOS_RAW" ]]; then
+        RECUERDOS_TURNOS=$(jq -a -s --argjson q "${VEC_CONSULTA:-null}" --argjson umb "$UMBRAL_SIM" --argjson maxm "$MAX_MEMORIA" --argjson maxh "$MAX_MEM_HERRAMIENTA" '
+            def cos(a; b):
+                if (a != null and b != null) then
+                    ((a[:1024] | map(. * .) | add | sqrt) + 0.000001) as $na |
+                    ((b[:1024] | map(. * .) | add | sqrt) + 0.000001) as $nb |
+                    (([a[:1024], b[:1024]] | transpose | map((.[0] // 0) * (.[1] // 0)) | add) / ($na * $nb))
+                else
+                    0
+                end;
+            unique_by(.messages[0].content) |
+            if $q == null then
+                .[-$maxm:]
+            else
+                [
+                    to_entries[ ] |
+                    select(.value.embedding != null) |
+                    ((.value.herramienta // 0) == 1 or ((.value.messages[1].content // "") | startswith("["))) as $es_herr |
+                    (cos(.value.embedding; $q)) as $c_emb |
+                    (if .value.emb_u != null then cos(.value.emb_u; $q) else 0 end) as $c_u |
+                    (if $c_u > $c_emb then $c_u else $c_emb end) as $c_max |
+                    select(
+                        ($es_herr | not) or
+                        ($c_u < 0.75 and $c_emb < 0.75)
+                    ) |
+                    select($c_max >= $umb) |
+                    ((.value.embedding | map(. * .) | add | sqrt) + 0.000001) as $ne |
+                    . + {sim: ($ne * $c_max), _herr: (if $es_herr then 1 else 0 end)}
+                ] |
+                sort_by(-.sim) |
+                (
+                    ([ .[ ] | select(._herr == 1) ][: $maxh]) +
+                    ([ .[ ] | select(._herr == 0) ][: $maxm])
+                ) |
+                sort_by(-.sim)[:$maxm] |
+                sort_by(.key) |
+                map(.value)
+            end
+        ' < <(printf '%s' "$CANDIDATOS_RAW") 2>/dev/null)
+        if [[ -z "$RECUERDOS_TURNOS" ]]; then RECUERDOS_TURNOS="[ ]"; fi
+    fi
+}
 
-if [[ -n "$CANDIDATOS_RAW" ]]; then
-    RECUERDOS_TURNOS=$(jq -a -s --argjson q "${VEC_CONSULTA:-null}" --argjson umb "$UMBRAL_SIM" --argjson maxm "$MAX_MEMORIA" --argjson maxh "$MAX_MEM_HERRAMIENTA" '
+buscar_y_reforzar_capa "$INDICE_PERSISTENTE" "0" "$NORM_DISPARO_PER" "1"
+buscar_y_reforzar_capa "$INDICE_EPISODICA" "1" "$NORM_DISPARO_MEM" "1"
+filtrar_recuerdos
+
+# Respaldo puramente vectorial: si la entrada limpia no disparo recuerdos (>= UMBRAL_SIM), combinarla geometricamente con el ultimo turno vivo del hipocampo (q + h) / ||q + h||
+NUM_REC_PUROS=$(jq -r 'length // 0' < <(echo "$RECUERDOS_TURNOS") 2>/dev/null)
+if [[ "${NUM_REC_PUROS:-0}" -eq 0 ]]; then
+    if [[ "$VEC_CONSULTA" != "null" ]]; then
+        if [[ -s "$HIPOCAMPO" ]]; then
+            VEC_RESPALDO=$(jq -a -c -s --argjson nd "$NORM_DISPARO_HIP" '
+                (.[0]) as $q |
+                ([ .[1:][ ] | select(((.messages[0].content // "") | startswith("<<") | not) and .embedding != null and ((.embedding | map(. * .) | add | sqrt) > $nd)) ][-1].embedding // null) as $h |
+                if ($q != null and $h != null) then
+                    ([$q[:1024], $h[:1024]] | transpose | map((.[0] // 0) + (.[1] // 0))) as $s |
+                    (($s | map(. * .) | add | sqrt) + 0.000001) as $ns |
+                    ($s | map(((. / $ns) * 10000 | round) / 10000))
+                else
+                    empty
+                end
+            ' < <(printf '%s\n' "$VEC_CONSULTA"; cat "$HIPOCAMPO") 2>/dev/null)
+            if [[ -n "$VEC_RESPALDO" ]]; then
+                VEC_CONSULTA="$VEC_RESPALDO"
+                export VEC_CONSULTA
+                CANDIDATOS_RAW=""
+                buscar_y_reforzar_capa "$INDICE_PERSISTENTE" "0" "$NORM_DISPARO_PER" "0"
+                buscar_y_reforzar_capa "$INDICE_EPISODICA" "1" "$NORM_DISPARO_MEM" "0"
+                filtrar_recuerdos
+            fi
+        fi
+    fi
+fi
+
+# Enrutar LoRAs con el vector definitivo (puro o respaldo vectorial)
+enrutar_loras
+
+# 2. Cargar Hipocampo real (ultimos $MAX_HIPOCAMPO turnos activos sobre el potencial de disparo, excluyendo lecturas volatiles de herramienta repetidas explicitamente)
+HIPOCAMPO_TURNOS="[ ]"
+if [[ -s "$HIPOCAMPO" ]]; then
+    HIPOCAMPO_TURNOS=$(jq -a -s --argjson maxh "$MAX_HIPOCAMPO" --argjson nd "$NORM_DISPARO_HIP" --argjson q "${VEC_PURO:-null}" --argjson umb "$UMBRAL_SIM" '
         def cos(a; b):
             if (a != null and b != null) then
                 ((a[:1024] | map(. * .) | add | sqrt) + 0.000001) as $na |
@@ -385,36 +430,20 @@ if [[ -n "$CANDIDATOS_RAW" ]]; then
             else
                 0
             end;
-        unique_by(.messages[0].content) |
-        if $q == null then
-            .[-$maxm:]
-        else
-            [
-                to_entries[ ] |
-                select(.value.embedding != null) |
-                ((.value.herramienta // 0) == 1 or ((.value.messages[1].content // "") | startswith("["))) as $es_herr |
-                (cos(.value.embedding; $q)) as $c_emb |
-                (if .value.emb_u != null then cos(.value.emb_u; $q) else 0 end) as $c_u |
-                (if $c_u > $c_emb then $c_u else $c_emb end) as $c_max |
-                select(
-                    ($es_herr | not) or
-                    ($c_u < 0.75 and $c_emb < 0.75)
-                ) |
-                select($c_max >= $umb) |
-                ((.value.embedding | map(. * .) | add | sqrt) + 0.000001) as $ne |
-                . + {sim: ($ne * $c_max), _herr: (if $es_herr then 1 else 0 end)}
-            ] |
-            sort_by(-.sim) |
-            (
-                ([ .[ ] | select(._herr == 1) ][: $maxh]) +
-                ([ .[ ] | select(._herr == 0) ][: $maxm])
-            ) |
-            sort_by(-.sim)[:$maxm] |
-            sort_by(.key) |
-            map(.value)
-        end
-    ' < <(printf '%s' "$CANDIDATOS_RAW") 2>/dev/null)
-    if [[ -z "$RECUERDOS_TURNOS" ]]; then RECUERDOS_TURNOS="[ ]"; fi
+        [
+            .[ ] |
+            select(.embedding == null or ((.embedding | map(. * .) | add | sqrt) > $nd)) |
+            ((.herramienta // 0) == 1 or ((.messages[1].content // "") | startswith("["))) as $es_herr |
+            select(
+                ($es_herr | not) or ($q == null) or
+                (
+                    (if .emb_u != null then cos(.emb_u; $q) else 0 end) < 0.75 and
+                    (cos(.embedding; $q) < 0.75)
+                )
+            )
+        ][-$maxh:]
+    ' "$HIPOCAMPO" 2>/dev/null)
+    if [[ -z "$HIPOCAMPO_TURNOS" ]]; then HIPOCAMPO_TURNOS="[ ]"; fi
 fi
 
 # 3. Unir Recuerdos a largo plazo + Hipocampo del momento presente (sin duplicar turnos y mostrando fecha)

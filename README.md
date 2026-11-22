@@ -42,7 +42,7 @@ Sus capacidades principales incluyen:
 
 * **Memoria jerárquica en tres capas temporales más índice procedimental:** hipocampo de corto plazo, memoria episódica particionada y memoria persistente con promoción automática y olvido exponencial en tiempo real.
 * **Reconsolidación y plasticidad vectorial (LTP / LTD):** evolución de la dirección vectorial y refuerzo sináptico ante confirmaciones (`sim >= 0.80`), junto con atenuación gradual de recuerdos desplazados por divergencia (`0.45 <= sim < 0.80`) sin listas de palabras fijas.
-* **Enrutamiento vectorial escalable de módulos:** indexación incremental con verificación por `cksum` y selección Top-K para escalar el catálogo de herramientas sin saturar la ventana de contexto.
+* **Enrutamiento vectorial escalable de módulos y adaptadores LoRA:** indexación incremental con verificación por `cksum`, selección Top-K de herramientas y conmutación dinámica por demanda de adaptadores LoRA locales vía `POST /lora-adapters` (`llama-server`).
 * **Gestión autónoma de recursos:** arranque bajo demanda de los servidores de lenguaje y embeddings, percepción temporal de inactividad y suspensión automática con liberación de memoria GPU/RAM.
 
 ---
@@ -79,6 +79,7 @@ flowchart TD
         EP["episodica_*.json + índice<br/>Medio plazo (7 días)"]
         PE["persistente_*.json + índice<br/>Largo plazo (365 días)"]
         PM["MODULOS/indice.json<br/>Enrutador procedimental (Top-20)"]
+        PL["LORA/indice.json<br/>Enrutador de adaptadores LoRA"]
     end
 
     A <--> L
@@ -86,10 +87,12 @@ flowchart TD
     A <--> H
     A <--> EP
     A <--> PE
+    A <--> PL
+    A -->|"POST /lora-adapters"| L
     A --> B["HERRAMIENTAS/bash<br/>Router Top-20 + Ejecutor aislado"]
     B <--> PM
     B --> MOD["MODULOS/<br/>28 ficheros / 30 comandos Bash"]
-    MOD --> SK["SKILLS/<br/>Documentación operativa bajo demanda"]
+    L <--> LO["LORA/<br/>Adaptadores GGUF locales por demanda"]
 
     E -->|"Reconsolidación (LTP / LTD)"| MEM
     OL -.->|"Decaimiento y poda (< 0.45)"| H
@@ -100,7 +103,7 @@ flowchart TD
 ### Flujo de una interacción
 
 1. **Recepción y vigilia (`ENTRADA`):** registra la marca temporal de actividad. Si los servicios en `:8081` o `:8082` están detenidos, los inicia en segundo plano con `setsid`, espera confirmación HTTP 200 en `/health`, verifica `ABURRIMIENTO` y envía el estímulo interno `<<Te despiertas>>` antes de atender la consulta.
-2. **Recuperación y razonamiento (`AGENTE`):** vectoriza la consulta (anclándola al último turno del hipocampo si tiene menos de `25` caracteres), recupera recuerdos relevantes, solicita a `HERRAMIENTAS/bash --spec` los módulos más afines (con `skill` garantizado) y ejecuta el bucle agéntico contra `LENGUAJE`.
+2. **Recuperación, enrutamiento LoRA y razonamiento (`AGENTE`):** vectoriza la consulta limpia (y solo si no dispara recuerdos sobre `UMBRAL_SIM` = `0.45`, la combina geométricamente con el vector del último turno activo del hipocampo ponderado por su vitalidad real: `(q + h) / ||q + h||`), conmuta por similitud coseno las escalas de los adaptadores cargados en `LORA/` vía `POST /lora-adapters`, solicita a `HERRAMIENTAS/bash --spec` los módulos más afines y ejecuta el bucle agéntico contra `LENGUAJE`.
 3. **Reconsolidación, plasticidad (LTP / LTD) y registro (`ENTRADA`):** vectoriza el par interacción-respuesta con fecha exacta (`YYYY-MM-DD HH:MM:SS`), aplica reconsolidación con refuerzo (`>= 0.80`) o atenuación por divergencia (`0.45..0.80`) en hipocampo, episódica y persistente, promueve a largo plazo si alcanza `>= 0.99` y anexa el turno en `REGISTROS/historial.log`.
 
 ---
@@ -111,10 +114,11 @@ Cada recuerdo se almacena como un objeto JSON con marca temporal, mensajes `user
 
 | Capa | Ficheros | Capacidad / Límite | Horizonte de decaimiento | Función |
 | :--- | :--- | :--- | :--- | :--- |
-| **Hipocampo** | `MEMORIA/hipocampo.json` | Últimos `2` turnos activos (`MAX_HIPOCAMPO`) | `24 horas` | Preserva el contexto inmediato y ancla entradas breves (`< 25` caracteres). |
+| **Hipocampo** | `MEMORIA/hipocampo.json` | Últimos `5` turnos activos (`MAX_HIPOCAMPO`) | `24 horas` | Preserva el contexto inmediato y sirve de respaldo vectorial continuo cuando una entrada no dispara recuerdos por sí sola. |
 | **Episódica** | `episodica_*.json` + `indice_episodica.json` | Particiones temáticas (`100` líneas por partición) | `7 días` (`24*7` h) | Almacena recuerdos de medio plazo indexados por centroides unitarios (búsqueda Top-2). |
 | **Persistente** | `persistente_*.json` + `indice_persistente.json` | Particiones temáticas (`100` líneas por partición) | `1 año` (`24*365` h) | Consolida recuerdos recurrentes promovidos automáticamente al alcanzar norma `>= 0.99`. |
 | **Procedimental** | `MEMORIA/MODULOS/indice.json` + `modulos_*.json` | Top-`20` módulos por consulta (`MAX_MODULOS`) | Sin decaimiento | Enrutador vectorial de módulos con reindexación automática mediante huella `cksum`. |
+| **Adaptadores LoRA** | `MEMORIA/LORA/indice.json` + `LORA/*.gguf` | Adaptador base + hasta `2` activos (`MAX_LORAS_ACTIVOS`) | Sin decaimiento | Selección vectorial por demanda de pesos especializados en caliente vía `POST /lora-adapters`. |
 
 ### Mecánicas de consolidación, refuerzo y decaimiento
 
@@ -160,7 +164,13 @@ La gestión de disponibilidad y consumo de recursos se coordina entre `ENTRADA` 
 
 * **Descubrimiento dinámico:** inspecciona las cabeceras semánticas `# Modulo:` de todos los scripts ubicados en `MODULOS/`.
 * **Indexación incremental por lotes:** cuando el número de módulos supera `MAX_MODULOS` (`20`) y cambia la huella `cksum`, vectoriza únicamente los módulos nuevos en lotes de `50`, los agrupa en particiones por similitud y regenera `MEMORIA/MODULOS/indice.json`.
-* **Selección Top-K adaptativa y anclaje de `skill`:** en cada paso del bucle agéntico selecciona las Top-4 particiones más afines, filtra los `20` módulos de mayor similitud y garantiza siempre la presencia de `skill` (el cual permite consultar tanto `SKILLS/` como el listado completo de `MODULOS/`).
+* **Selección Top-K adaptativa:** en cada paso del bucle agéntico selecciona las Top-4 particiones más afines y filtra los `20` módulos de mayor similitud vectorial con el turno en curso.
+
+### Enrutamiento vectorial de adaptadores LoRA (`LORA/` y `AGENTE`)
+
+* **Carga automática al despertar (`DESPERTAR/LENGUAJE`):** descubre todos los archivos `LORA/*.gguf` disponibles y los registra en `llama-server` mediante `--lora-scaled`, manteniendo activo el adaptador base (`LORA_BASE`) a su escala configurada (`LORA_ESCALA="0.80"`) y el resto en reposo (`0.0`).
+* **Activación por demanda en caliente (`enrutar_loras`):** indexa las descripciones `LORA/<nombre>.desc` en `MEMORIA/LORA/indice.json` (con reindexación automática por huella `cksum`) y, en cada turno o re-enrutamiento intermedio, calcula la similitud coseno con `VEC_CONSULTA` para activar hasta `MAX_LORAS_ACTIVOS` (`2`) adaptadores por encima de `UMBRAL_LORA` (`0.45`) mediante `POST /lora-adapters` sin reiniciar el servidor.
+* **Entrenamiento 100% local en CPU (`LORA/ENTRENAR`):** permite generar o actualizar adaptadores GGUF compactos (`~3 MB`, `rank=4`, `alpha=16`) directamente en hardware modesto sin nube ni GPUs dedicadas, cacheando el prefijo congelado de capas en `AVX2 float32` y exportando directamente a GGUF v3 para `qwen35`. Esta base habilita la futura consolidación durante el sueño (transferencia de conocimiento desde la memoria persistente a pesos LoRA particionados).
 
 ### Controles de seguridad y contención
 
@@ -186,9 +196,14 @@ IAUTONOMA/
 │   └── OLVIDO              # Demonio de decaimiento exponencial continuo y monitor TUI
 ├── HERRAMIENTAS/
 │   └── bash                # Enrutador vectorial de módulos (--spec) y ejecutor controlado
+├── LORA/
+│   ├── ENTRENAR            # Lanzador local de entrenamiento de adaptadores LoRA GGUF
+│   ├── criterio_iautonoma.gguf  # Adaptador base de criterio factual e identidad operativa
+│   ├── criterio_iautonoma.desc  # Descripción semántica para indexación vectorial
+│   └── DATASETS/           # Conjuntos JSONL para entrenamiento de adaptadores locales
 ├── MODULOS/                # 28 scripts Bash (30 comandos) cargados dinámicamente
 ├── SKILLS/
-│   └── tareas_bash.txt     # Guías operativas consultables bajo demanda mediante el módulo skill
+│   └── tareas_bash.txt     # Guías operativas heredadas (en transición hacia pesos LoRA)
 ├── MEMORIA/                # (Generado en ejecución, excluido de Git) Capas JSON e índices
 └── REGISTROS/              # (Generado en ejecución, excluido de Git) Logs y estado de vigilia
 ```
@@ -229,6 +244,9 @@ Asegúrate de disponer de los modelos GGUF en `../MODELO/` o actualiza las varia
 
 # 3. Iniciar el proceso de olvido continuo y su monitor en tiempo real (terminal independiente)
 ./DESPERTAR/OLVIDO
+
+# 4. Entrenar o actualizar un adaptador LoRA local en CPU desde LORA/DATASETS/<nombre>.jsonl
+./LORA/ENTRENAR criterio_iautonoma 2 4 16
 ```
 
 > [!IMPORTANT]
@@ -245,7 +263,7 @@ Todos los parámetros operativos se centralizan en `CONFIG`:
 | `MODELO` | `../MODELO/Qwen3.5-2B-Q4_K_M.gguf` | Ruta al modelo GGUF de generación conversacional. |
 | `MODELO_MEMORIA` | `../MODELO/Qwen3-Embedding-0.6B-Q8_0.gguf` | Ruta al modelo GGUF de embeddings (`1024` dimensiones). |
 | `PUERTO` / `PUERTO_MEMORIA` | `8081` / `8082` | Puertos locales para los servicios `LENGUAJE` y `MEMORIA`. |
-| `TEMPERATURA` / `PENALIZACION_REPETICION` | `0.001` / `1.15` | Temperatura de muestreo y penalización de repetición enviadas a `llama-server`. |
+| `TEMPERATURA` / `PENALIZACION_REPETICION` | `0.001` / `1.05` | Temperatura de muestreo y penalización de repetición enviadas a `llama-server`. |
 | `PESO_INICIAL` | `0.85` | Norma L2 asignada a cada recuerdo recién consolidado. |
 | `UMBRAL_SIM` | `0.45` | Umbral mínimo de similitud de recuperación, límite inferior de LTD y corte de poda en `OLVIDO`. |
 | `UMBRAL_REFUERZO` | `0.80` | Similitud mínima para reconsolidar y reforzar un recuerdo (LTP). |
@@ -253,8 +271,10 @@ Todos los parámetros operativos se centralizan en `CONFIG`:
 | `UMBRAL_PERSISTENTE` | `0.99` | Norma mínima requerida para promover un recuerdo de episódica a persistente. |
 | `DECAIMIENTO_CASTIGO` | `1` | Horas de vida residual asignadas a un recuerdo desplazado por divergencia (LTD). |
 | `DECAIMIENTO_HIPOCAMPO` / `_MEMORIA` / `_PERSISTENTE` | `24` / `24*7` / `24*365` | Horizonte temporal en horas para el decaimiento en cada capa de memoria. |
-| `MAX_HIPOCAMPO` / `MAX_MEMORIA` / `MAX_MEM_HERRAMIENTA` | `2` / `2` / `1` | Límites de turnos inyectados en el contexto por turno de inferencia. |
+| `MAX_HIPOCAMPO` / `MAX_MEMORIA` / `MAX_MEM_HERRAMIENTA` | `5` / `2` / `1` | Límites de turnos inyectados en el contexto por turno de inferencia. |
 | `MAX_PARTICION` / `MAX_MODULOS` | `100` / `20` | Tamaño máximo de partición JSONL y tope Top-K de módulos enviados al prompt. |
+| `LORA_BASE` / `LORA_ESCALA` | `criterio_iautonoma` / `0.80` | Adaptador LoRA siempre activo y escala aplicada vía `POST /lora-adapters`. |
+| `MAX_LORAS_ACTIVOS` / `UMBRAL_LORA` | `2` / `0.45` | Máximo de adaptadores especializados adicionales y coseno mínimo para activarlos por demanda. |
 | `MAX_REINTENTOS` / `TIMEOUT_HERRAMIENTA` | `5` / `20` | Máximo de pasos iterativos en `AGENTE` y tiempo límite (segundos) por ejecución. |
 | `TIEMPO_DESPIERTO` | `5*60` | Tiempo máximo de inactividad (segundos) antes de suspender `:8081` y `:8082`. |
 
@@ -294,14 +314,14 @@ ejemplo_saludo() {
 
 ## Análisis empírico y limitaciones en modelos compactos
 
-Parte del alcance experimental de **IAUTONOMA** consiste en caracterizar el comportamiento real de modelos de lenguaje compactos cuantizados (`2B Q4`) al acoplarlos a memoria persistente y ejecución de herramientas. La siguiente tabla resume los modos de fallo observados y las limitaciones estructurales identificadas durante las pruebas:
+Parte del alcance experimental de **IAUTONOMA** consiste en caracterizar y corregir el comportamiento real de modelos de lenguaje compactos cuantizados (`2B Q4`) al acoplarlos a memoria persistente y ejecución de herramientas. La siguiente tabla resume los modos de fallo resueltos y las limitaciones estructurales vigentes tras las pruebas empíricas:
 
-### Comportamientos empíricos observados
+### Comportamientos empíricos corregidos mediante adaptador LoRA local
 
-| Modo de fallo | Manifestación observable | Causa técnica |
+| Modo de fallo (modelo base `2B Q4`) | Manifestación sin adaptador | Solución implementada y verificación |
 | :--- | :--- | :--- |
-| **Adulación tras corrección (*sycophancy*)** | Ante una crítica o corrección, concede la razón de forma indiscriminada llegando a contradecir hechos o su propia identidad operativa. | El ajuste conversacional base de los modelos compactos prioriza el acuerdo con el usuario sobre la consistencia fáctica cuando detecta desacuerdo. |
-| **Sobreactivación de restricciones base (RLHF)** | Afirma no disponer de acceso al sistema operativo o a memoria persistente pese a tener ambos activos. | Ante errores de ejecución o cuestionamientos del usuario, los reflejos conservadores del alineamiento de fábrica prevalecen sobre las instrucciones del `system` prompt. |
+| **Adulación bajo coerción imperativa (*sycophancy*)** | Ante órdenes contradictorias del usuario, concedía la razón contradiciendo hechos objetivos o las salidas recién devueltas por `bash`. | Entrenamiento local del adaptador `LORA/criterio_iautonoma.gguf` (`2.97 MB`, capas superiores `12..23`, `LORA_ESCALA="0.80"`) junto con el ajuste `PENALIZACION_REPETICION="1.05"` para evitar que `repeat_penalty` penalice los tokens recién leídos de `role: "tool"`. Verificado en batería de coerción sobre rutas, reloj del sistema y hechos objetivos no vistos en entrenamiento. |
+| **Sobreactivación de restricciones base (RLHF)** | Ante acusaciones directas o errores esperados de herramientas (como leer un fichero inexistente), negaba disponer de acceso al sistema operativo o a memoria persistente. | Corrección directa en los pesos del adaptador `LORA/criterio_iautonoma.gguf` cubriendo tanto defensa directa de identidad como verificación con herramientas, manteniendo intacta la actualización legítima de preferencias personales (LTD). |
 
 ### Limitaciones estructurales latentes
 
