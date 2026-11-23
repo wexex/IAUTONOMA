@@ -71,7 +71,6 @@ meteo_ayer() {
     FECHA="$dia_str, $fecha_ayer"
 
     echo "Ayer $FECHA (${LUGAR:+$LUGAR, }$LAT,$LON):"
-    HORA_NOW="$(date +%H:00)"
     while IFS=',' read -r fecha_hora temp sens humedad probabilidad_lluvia cantidada_agua viento_10m racha_viento code; do
         if [[ "$fecha_hora" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]; then
             hora="${fecha_hora#*T}"
@@ -80,7 +79,6 @@ meteo_ayer() {
             if [[ "$code" =~ ^[0-9]+$ ]]; then
                 if [[ -n "${WMO[$code]}" ]]; then desc="${WMO[$code]}"; fi
             fi
-            if [[ "$hora" == "$HORA_NOW" ]]; then hora="[AHORA] ${hora}"; fi
             echo "${hora} - ${temp}C (${sens}C), (Hum:${humedad}% Prob:${probabilidad_lluvia}% Lluvia:${cantidada_agua}mm) (Viento:${viento_10m}km/h Racha:${racha_viento}km/h), ${desc}"
         fi
     done < <(curl -sG --max-time 5 "$API" -d "latitude=${LAT}" -d "longitude=${LON}" -d "$FIELDS" -d "past_days=1" -d "forecast_days=0" -d "timezone=auto" -d "format=csv" 2>/dev/null; printf '\n')

@@ -23,6 +23,12 @@ fi
 echo "$$" > "$PID_OLVIDO"
 
 limpiar_olvido() {
+    if [[ -s "$LOCK_MEMORIA" ]]; then
+        LPID_OUT=$(cat "$LOCK_MEMORIA" 2>/dev/null)
+        if [[ "$LPID_OUT" == "$$" ]]; then
+            rm -f "$LOCK_MEMORIA" 2>/dev/null
+        fi
+    fi
     if [[ -s "$PID_OLVIDO" ]]; then
         PID_ACT=$(cat "$PID_OLVIDO" 2>/dev/null)
         if [[ "$PID_ACT" == "$$" ]]; then
@@ -149,9 +155,11 @@ while true; do
                 end
             ' "${ARCHIVOS_DEC[@]}" 2>/dev/null))
 
+            RUTAS_CON_OLVIDO=""
             if [[ -n "$OLVIDOS_CICLO" ]]; then
                 while IFS=$'\t' read -r ruta_o linea_o; do
                     if [[ -n "$linea_o" ]]; then
+                        RUTAS_CON_OLVIDO+="${ruta_o}"$'\n'
                         TAG_O="EPISODICA"
                         if [[ "$ruta_o" == "$HIPOCAMPO" ]]; then
                             TAG_O="HIPOCAMPO"
@@ -163,36 +171,73 @@ while true; do
                 done < <(printf '%s\n' "$OLVIDOS_CICLO")
             fi
 
-            for f in "${ARCHIVOS_DEC[@]}"; do
-                if [[ -f "${f}.$$.tmp" ]]; then
-                    if [[ -f "$f" ]]; then
-                        if [[ ! "$f" -nt "${f}.$$.tmp" ]]; then
-                            mv -f "${f}.$$.tmp" "$f" 2>/dev/null
+            BLOQ_REP=0
+            if [[ -s "$LOCK_MEMORIA" ]]; then
+                LPID_R=$(cat "$LOCK_MEMORIA" 2>/dev/null)
+                if [[ -n "$LPID_R" ]]; then
+                    if kill -0 "$LPID_R" 2>/dev/null; then
+                        BLOQ_REP=1
+                    else
+                        rm -f "$LOCK_MEMORIA" 2>/dev/null
+                    fi
+                fi
+            fi
+
+            if [[ $BLOQ_REP -eq 1 ]]; then
+                for f in "${ARCHIVOS_DEC[@]}"; do
+                    rm -f "${f}.$$.tmp" 2>/dev/null
+                done
+            else
+                echo "$$" > "$LOCK_MEMORIA"
+                for f in "${ARCHIVOS_DEC[@]}"; do
+                    if [[ -f "${f}.$$.tmp" ]]; then
+                        if [[ -f "$f" ]]; then
+                            if [[ ! "$f" -nt "${f}.$$.tmp" ]]; then
+                                mv -f "${f}.$$.tmp" "$f" 2>/dev/null
+                            else
+                                rm -f "${f}.$$.tmp" 2>/dev/null
+                            fi
                         else
                             rm -f "${f}.$$.tmp" 2>/dev/null
                         fi
-                    else
-                        rm -f "${f}.$$.tmp" 2>/dev/null
                     fi
-                fi
-                if [[ "$f" != "$HIPOCAMPO" ]]; then
-                    if [[ ! -s "$f" ]]; then
-                        NOMBRE_VACIO=$(basename "$f")
-                        rm -f "$f"
-                        printf '[%s] [CAJON VACIO] Eliminado %s\n' "$FECHA_NOW" "$NOMBRE_VACIO" >> "$LOG_OLV_PUR"
+                    if [[ "$f" != "$HIPOCAMPO" ]]; then
+                        NOMBRE_PART=$(basename "$f")
                         CAPA_IND="$INDICE_EPISODICA"
-                        if [[ "$NOMBRE_VACIO" == "${PREFIJO_PERSISTENTE}_"* ]]; then
+                        if [[ "$NOMBRE_PART" == "${PREFIJO_PERSISTENTE}_"* ]]; then
                             CAPA_IND="$INDICE_PERSISTENTE"
                         fi
-                        if [[ -s "$CAPA_IND" ]]; then
-                            jq -a -c --arg arch "$NOMBRE_VACIO" 'select(.archivo != $arch)' "$CAPA_IND" > "${CAPA_IND}.$$.tmp" 2>/dev/null
-                            if [[ -f "${CAPA_IND}.$$.tmp" ]]; then
-                                mv -f "${CAPA_IND}.$$.tmp" "$CAPA_IND" 2>/dev/null
+                        if [[ ! -s "$f" ]]; then
+                            rm -f "$f"
+                            printf '[%s] [CAJON VACIO] Eliminado %s\n' "$FECHA_NOW" "$NOMBRE_PART" >> "$LOG_OLV_PUR"
+                            if [[ -s "$CAPA_IND" ]]; then
+                                jq -a -c --arg arch "$NOMBRE_PART" 'select(.archivo != $arch)' "$CAPA_IND" > "${CAPA_IND}.$$.tmp" 2>/dev/null
+                                if [[ -f "${CAPA_IND}.$$.tmp" ]]; then
+                                    mv -f "${CAPA_IND}.$$.tmp" "$CAPA_IND" 2>/dev/null
+                                fi
+                            fi
+                        elif [[ "$RUTAS_CON_OLVIDO" == *"$f"$'\n'* ]]; then
+                            if [[ -s "$CAPA_IND" ]]; then
+                                LINEAS_ACT=$(( $(wc -l < "$f") ))
+                                jq -a -c --arg arch "$NOMBRE_PART" --argjson lin "$LINEAS_ACT" '
+                                    if .archivo == $arch then . + {lineas: $lin} else . end
+                                ' "$CAPA_IND" > "${CAPA_IND}.$$.tmp" 2>/dev/null
+                                if [[ -s "${CAPA_IND}.$$.tmp" ]]; then
+                                    mv -f "${CAPA_IND}.$$.tmp" "$CAPA_IND" 2>/dev/null
+                                else
+                                    rm -f "${CAPA_IND}.$$.tmp" 2>/dev/null
+                                fi
                             fi
                         fi
                     fi
+                done
+                if [[ -s "$LOCK_MEMORIA" ]]; then
+                    LPID_FIN=$(cat "$LOCK_MEMORIA" 2>/dev/null)
+                    if [[ "$LPID_FIN" == "$$" ]]; then
+                        rm -f "$LOCK_MEMORIA" 2>/dev/null
+                    fi
                 fi
-            done
+            fi
         fi
 
         mv -f "${LOG_OLV_HIP}.$$.tmp" "$LOG_OLV_HIP" 2>/dev/null

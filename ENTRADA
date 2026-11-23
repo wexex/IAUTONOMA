@@ -176,6 +176,22 @@ else
             rm -f "$ARCH_TRAZA_TOOL" 2>/dev/null
         fi
         exit 0
+    elif [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
+        mkdir -p "$DIR_REGISTROS"
+        ESPERA_I=0
+        while [[ $ESPERA_I -lt 100 ]]; do
+            if [[ ! -s "$LOCK_MEMORIA" ]]; then break; fi
+            LPID_I=$(cat "$LOCK_MEMORIA" 2>/dev/null)
+            if [[ -z "$LPID_I" ]]; then break; fi
+            if ! kill -0 "$LPID_I" 2>/dev/null; then
+                rm -f "$LOCK_MEMORIA" 2>/dev/null
+                break
+            fi
+            sleep 0.1
+            ESPERA_I=$((ESPERA_I + 1))
+        done
+        echo "$$" > "$LOCK_MEMORIA"
+        trap 'if [[ -s "$LOCK_MEMORIA" ]]; then if [[ "$(cat "$LOCK_MEMORIA" 2>/dev/null)" == "$$" ]]; then rm -f "$LOCK_MEMORIA" 2>/dev/null; fi; fi' EXIT
     fi
 fi
 

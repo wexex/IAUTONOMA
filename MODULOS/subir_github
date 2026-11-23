@@ -1,9 +1,8 @@
 #!/bin/bash
 # Modulo: subir_github [mensaje] - Guarda y sube el codigo del proyecto a GitHub
 
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/CONFIG"
-
 subir_github() {
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/CONFIG"
     SUBIR_MSG="${*:-Actualizacion}"
     SUBIR_RUTA="$DIR"
     SUBIR_OK=1

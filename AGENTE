@@ -6,7 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)/CONFIG"
 ENTRADA="$*"
 
 # Espera activa hasta que el servidor esté vivo y respondiendo (HTTP 200)
-while ! curl -sf "http://${HOST}:${PUERTO}/health" >/dev/null 2>&1; do sleep 0.5; done
+while ! curl -sf "http://${HOST}:${PUERTO}/health" >/dev/null 2>/dev/null; do sleep 0.5; done
 
 # Si un turno previo aun esta consolidando memoria en segundo plano, esperar brevemente su cierre atomico
 if [[ -s "$LOCK_MEMORIA" ]]; then
@@ -114,7 +114,7 @@ enrutar_loras() {
                     elif curl -sf "http://${HOST}:${PUERTO_MEMORIA}/health" >/dev/null 2>/dev/null; then
                         if [[ -s "$DIR_LORA_DATASETS/${nom_l}.jsonl" ]]; then
                             if [[ ! -s "$DIR_LORA/${nom_l}.desc" ]]; then
-                                PAY_DS=$(jq -a -c -s '{input: [ .[ ] | select(type == "object" and (.messages | length) >= 2) | ((.messages[0].content // "") + " " + (.messages[1].content // "")) ]}' "$DIR_LORA_DATASETS/${nom_l}.jsonl" 2>/dev/null)
+                                PAY_DS=$(jq -a -c -s '{input: [ .[ ] | select(type == "object" and (.messages | length) >= 2) | ((.messages[0].content // "") + " " + (.messages[-1].content // "")) ]}' "$DIR_LORA_DATASETS/${nom_l}.jsonl" 2>/dev/null)
                                 RESP_DS=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_DS" 2>/dev/null)
                                 if [[ -n "$RESP_DS" ]]; then
                                     jq -a -c --arg nom "$nom_l" '
@@ -656,7 +656,7 @@ if [[ "${MODO_INTERNO:-0}" -eq 1 ]]; then
 
     RESP_INTERNA=$(curl -s "$URL" -H "Content-Type: application/json" -d "$PAYLOAD_INTERNO")
     if [[ -z "$RESP_INTERNA" ]]; then RESP_INTERNA="{}"; fi
-    TEXTO_FINAL=$(jq -n -r --argjson r "$RESP_INTERNA" '($r.choices[0].message.content // "") | gsub("<[^>]*tool_call[^>]*>|</?parameter[^>]*>|<function=[^>]*>|</?response>"; "")')
+    TEXTO_FINAL=$(jq -r '(.choices[0].message.content // "") | gsub("<[^>]*tool_call[^>]*>|</?parameter[^>]*>|<function=[^>]*>|</?response>"; "")' < <(printf '%s' "$RESP_INTERNA") 2>/dev/null)
     RESPONDI=1
 else
     # Intentos de obtener respuesta
@@ -729,7 +729,7 @@ else
                 FIRMA_LLAMADA="[$TOOL_NAME:$MODULO_USADO]"
                 if [[ "$ETIQUETAS_TOOLS" == *"$FIRMA_LLAMADA"$'\n'* ]]; then
                     REPETIDO_DETECTADO=1
-                    SALIDA_HERRAMIENTA="$ULTIMA_SAL_PASO"
+                    SALIDA_HERRAMIENTA="(ya ejecutado en este turno; usa el resultado anterior)"
                 else
                     if [[ -x "$DIR_HERRAMIENTAS/$TOOL_NAME" ]]; then
                         SALIDA_HERRAMIENTA=$(timeout "$TIMEOUT_HERRAMIENTA" "$DIR_HERRAMIENTAS/$TOOL_NAME" "$TOOL_ARGS" 2>/dev/null)
@@ -754,7 +754,11 @@ else
             fi
 
             if [[ $PASO -lt $MAX_REINTENTOS ]]; then
-                if [[ "$ULTIMA_SAL_PASO" == Error:\ herramienta* ]]; then
+                NECESITA_REENRUTAR=0
+                if [[ "$ULTIMA_SAL_PASO" == Error:* ]]; then NECESITA_REENRUTAR=1; fi
+                if [[ "$ULTIMA_SAL_PASO" == *"command not found"* ]]; then NECESITA_REENRUTAR=1; fi
+                if [[ "$ULTIMA_SAL_PASO" == *"orden no encontrada"* ]]; then NECESITA_REENRUTAR=1; fi
+                if [[ $NECESITA_REENRUTAR -eq 1 ]]; then
                     TEXTO_REENRUTAR="$ENTRADA $ULTIMO_MOD_PASO ${ULTIMA_SAL_PASO:0:120}"
                     TEXTO_REENRUTAR="${TEXTO_REENRUTAR//$'\r'/ }"
                     TEXTO_REENRUTAR="${TEXTO_REENRUTAR//$'\n'/ }"

@@ -47,7 +47,7 @@ llama-server \
 -cram 0 \
 -lm none \
 --no-host \
---log-colors on 2>&1 | tee >(sed 's/\x1b\[[0-9;]*m//g' >> "$LOG_SERVER")
+--log-colors on > >(tee >(sed 's/\x1b\[[0-9;]*m//g' >> "$LOG_SERVER")) 2> >(tee >(sed 's/\x1b\[[0-9;]*m//g' >> "$LOG_SERVER"))
 
 
 # ver_json() { curl -s http://localhost:8081/v1/chat/completions -H "Content-Type: application/json" -d "$(jq -n --arg m "$*" --argjson t "$(./HERRAMIENTAS/run_command --spec)" '{messages:[{role:"user",content:$m}],tools:[$t],tool_choice:"auto",temperature:0.01}')" | jq .; }

@@ -49,7 +49,12 @@ apagar_servidores() {
     dormir_puerto "$PUERTO_MEMORIA"
 }
 
+REM_ACTIVO=0
 limpiar_al_salir() {
+    if [[ $REM_ACTIVO -eq 1 ]]; then
+        apagar_servidores
+        REM_ACTIVO=0
+    fi
     if [[ -s "$LOCK_MEMORIA" ]]; then
         LPID_S=$(cat "$LOCK_MEMORIA" 2>/dev/null)
         if [[ "$LPID_S" == "$$" ]]; then
@@ -60,6 +65,8 @@ limpiar_al_salir() {
     rm -f "$PID_DORMIR" 2>/dev/null
 }
 trap limpiar_al_salir EXIT
+trap 'limpiar_al_salir; exit 143' TERM
+trap 'limpiar_al_salir; exit 130' INT
 
 DESPERTO=0
 comprobar_despertar() {
@@ -886,7 +893,7 @@ ejecutar_en_sandbox_sueno() {
                 echo "(sin datos de $MOD_SB en este recuerdo)"
             fi
         else
-            head -c 4000 < <(timeout "$TIMEOUT_HERRAMIENTA" bash -c 'cd "$1" && for f in "$2"/*; do if [[ -f "$f" ]]; then source "$f"; fi; done; eval "$3"' _ "$DIR_SANDBOX_SUENO" "$DIR_MODULOS" "$CMD_SB" 2>/dev/null)
+            head -c 4000 < <(timeout "$TIMEOUT_HERRAMIENTA" bash -c 'if cd "$1"; then for f in "$2"/*; do if [[ -f "$f" ]]; then source "$f"; fi; done; eval "$3"; fi' _ "$DIR_SANDBOX_SUENO" "$DIR_MODULOS" "$CMD_SB" 2>/dev/null)
         fi
     fi
 }
@@ -906,6 +913,7 @@ fase_rem() {
         registrar_sueno "[REM] Iniciando fase REM (sandbox SUEÑO/ con doble rol, clase=$CLASE_T) para $NOM_T..."
         crear_sandbox_sueno
 
+        REM_ACTIVO=1
         true < <(setsid "$DIR/DESPERTAR/MEMORIA" </dev/null >/dev/null 2>/dev/null)
 
         cd "$DIR"
@@ -951,16 +959,15 @@ fase_rem() {
 
         if [[ $REM_PAUSADO -eq 1 ]]; then
             apagar_servidores
+            REM_ACTIVO=0
             rm -rf "$DIR_SANDBOX_SUENO" 2>/dev/null
             registrar_sueno "[REM] Pausado por despertar del usuario antes del examen ($NOM_T)."
         elif [[ $SERV_OK -eq 0 ]]; then
             apagar_servidores
+            REM_ACTIVO=0
             rm -rf "$DIR_SANDBOX_SUENO" 2>/dev/null
             registrar_sueno "[REM] Error: no respondieron los servidores en fase REM ($NOM_T)."
         else
-            SYS_REM='- Eres IAUTONOMA, un agente autonomo local con memoria persistente en disco (MEMORIA/) y acceso real al sistema operativo y terminal de Linux mediante la herramienta bash.
-- Responde en Español de forma concisa de tu a tu y con emojis, sin formato latex.'
-
             SYS_REM_HERR='- Eres IAUTONOMA, un agente autonomo local con memoria persistente en disco (MEMORIA/) y acceso real al sistema operativo y terminal de Linux mediante la herramienta bash.
 
 - Responde en Español de forma concisa de tu a tu y con emojis, sin formato latex.
@@ -1019,6 +1026,7 @@ fase_rem() {
                                     if [[ -z "$VEC_R" ]]; then VEC_R="null"; fi
                                     SPEC_R=$(VEC_CONSULTA="$VEC_R" "$DIR_HERRAMIENTAS/bash" --spec "$PREG_R" 2>/dev/null)
                                     TOOLS_R=$(jq -s '.' < <(printf '%s' "$SPEC_R") 2>/dev/null)
+                                    if [[ -z "$TOOLS_R" ]]; then TOOLS_R="[ ]"; fi
 
                                     # Doble rol REM: usuario simulado lanza PREG_R; modelo responde asumiendo SUEÑO/ real
                                     PAY_USO=$(jq -a -n --arg sys "$SYS_REM_HERR" --arg u "$PREG_R" --argjson tls "$TOOLS_R" --argjson temp "$TEMPERATURA" --argjson rpen "${PENALIZACION_REPETICION:-1.05}" '{
@@ -1143,6 +1151,7 @@ fase_rem() {
                                 if [[ -z "$VEC_RD" ]]; then VEC_RD="null"; fi
                                 SPEC_RD=$(VEC_CONSULTA="$VEC_RD" "$DIR_HERRAMIENTAS/bash" --spec "$PREG_R" 2>/dev/null)
                                 TOOLS_RD=$(jq -s '.' < <(printf '%s' "$SPEC_RD") 2>/dev/null)
+                                if [[ -z "$TOOLS_RD" ]]; then TOOLS_RD="[ ]"; fi
 
                                 PAY_REM=$(jq -a -n --arg sys "$SYS_REM_HERR" --arg u "$PREG_R" --argjson tls "$TOOLS_RD" --argjson temp "$TEMPERATURA" --argjson rpen "${PENALIZACION_REPETICION:-1.05}" '{
                                     messages: [
@@ -1196,6 +1205,7 @@ fase_rem() {
             done < "$DIR_T/origen.json"
 
             apagar_servidores
+            REM_ACTIVO=0
             rm -rf "$DIR_SANDBOX_SUENO" 2>/dev/null
 
             if [[ $REM_PAUSADO -eq 1 ]]; then
@@ -1251,10 +1261,17 @@ fase_rem() {
                     if [[ $CICLO_SIG -ge "${MAX_CICLOS_REM:-4}" ]]; then
                         if [[ -s "$DIR_T/best_aprobados.txt" ]]; then
                             if [[ -s "$DIR_T/best.gguf" ]]; then
-                                cp -f "$DIR_T/best.gguf" "$OUT_GGUF" 2>/dev/null
-                                cp -f "$DIR_T/dataset.jsonl" "$OUT_DS" 2>/dev/null
-                                LIN_FINAL=$(( $(wc -l < "$OUT_DS") ))
-                                actualizar_indice_lora "$NOM_T" "$LIN_FINAL" "$DIR_T/centroide.json"
+                                DS_APROB=$(jq -a -c -s '
+                                    (.[0]) as $aprob |
+                                    .[1:][ ] |
+                                    select((.messages[0].content // "") as $u | ($aprob | index($u)) != null)
+                                ' < <(jq -a -R -s 'split("\n") | map(gsub("\r$"; "") | select(length > 0))' "$DIR_T/best_aprobados.txt"; cat "$DIR_T/dataset.jsonl") 2>/dev/null)
+                                if [[ -n "$DS_APROB" ]]; then
+                                    cp -f "$DIR_T/best.gguf" "$OUT_GGUF" 2>/dev/null
+                                    printf '%s\n' "$DS_APROB" > "$OUT_DS"
+                                    LIN_FINAL=$(( $(wc -l < "$OUT_DS") ))
+                                    actualizar_indice_lora "$NOM_T" "$LIN_FINAL" "$DIR_T/centroide.json"
+                                fi
                             fi
                             vaciar_aprobados_capa "$PART_ORIG" "$DIR_T/best_aprobados.txt" "$IND_ORIG"
                             rm -f "$DIR_MEM_LORA/huella" 2>/dev/null

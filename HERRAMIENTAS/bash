@@ -21,7 +21,7 @@ if [[ "$1" == "--spec" ]]; then
         fi
 
         if [[ $REINDEXAR -eq 1 ]]; then
-            if curl -sf "http://${HOST}:${PUERTO_MEMORIA}/health" >/dev/null 2>&1; then
+            if curl -sf "http://${HOST}:${PUERTO_MEMORIA}/health" >/dev/null 2>/dev/null; then
                 mkdir -p "$DIR_MEM_MODULOS"
                 CACHE_FILE="$DIR_MEM_MODULOS/cache.tmp.json"
                 RAW_CACHE="$DIR_MEM_MODULOS/raw_cache.tmp.json"
@@ -220,4 +220,9 @@ if grep -qE '(rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\s+(/|/\*|~|\*)|
     exit 0
 fi
 
-head -c 4000 < <(timeout "$TIMEOUT_HERRAMIENTA" bash -c 'for f in "$1"/*; do if [[ -f "$f" ]]; then source "$f"; fi; done; eval "$2"' _ "$DIR_MODULOS" "$CMD" 2>&1)
+TMP_OUT="$DIR_REGISTROS/.bash_out.$$.tmp"
+TMP_ERR="$DIR_REGISTROS/.bash_err.$$.tmp"
+mkdir -p "$DIR_REGISTROS"
+timeout "$TIMEOUT_HERRAMIENTA" bash -c 'for f in "$1"/*; do if [[ -f "$f" ]]; then source "$f"; fi; done; eval "$2"' _ "$DIR_MODULOS" "$CMD" >"$TMP_OUT" 2>"$TMP_ERR"
+head -c 4000 < <(cat "$TMP_OUT" "$TMP_ERR")
+rm -f "$TMP_OUT" "$TMP_ERR" 2>/dev/null
