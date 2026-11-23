@@ -211,10 +211,11 @@ enrutar_loras() {
                     prev: (.scale // 0.0),
                     es_base: ($nom == $base),
                     es_cur: ($nom | startswith("curiosidad_")),
+                    es_herr: ($nom | startswith("sueno_herr_")),
                     sim: (if ($q != null and $ev != null) then (dot($ev; $q) / (norm($ev) * $nq)) else 0 end)
                 }
             ] as $eval |
-            ([ $eval[ ] | select((.es_base | not) and (.es_cur | not) and .sim >= $umb) ] | sort_by(-.sim)) as $saber |
+            ([ $eval[ ] | select((.es_base | not) and (.es_cur | not) and (.es_herr or (.sim >= $maxm)) and .sim >= $umb) ] | sort_by(-.sim)) as $saber |
             (
                 if ($saber | length) > 0 then
                     $saber[:$maxa] | map(.id)

@@ -19,13 +19,18 @@ if [[ -z "$NOMBRE" ]]; then
 fi
 
 ARCH_DATASET="$DIR_LORA_DATASETS/${NOMBRE}.jsonl"
-mkdir -p "$DIR_LORA_PESOS"
+mkdir -p "$DIR_LORA_PESOS" "$DIR_REGISTROS"
 ARCH_SALIDA="$DIR_LORA_PESOS/${NOMBRE}.gguf"
 
 if [[ ! -s "$ARCH_DATASET" ]]; then
     echo "Error: no existe el dataset $ARCH_DATASET"
     exit 1
 fi
+
+NUM_EJ_M=$(( $(wc -l < "$ARCH_DATASET") ))
+printf '[%s] MANUAL LoRA=%s | dataset=%s | ejemplos=%s | epocas=%s | rango=%s | alfa=%s\n' \
+    "$(date "+%Y-%m-%d %H:%M:%S")" "$NOMBRE" "$(basename "$ARCH_DATASET")" "$NUM_EJ_M" "$EPOCAS" "$RANGO" "$ALFA" >> "$LOG_LORA_ENTRENAR"
+jq -r '"  - " + ((.messages[0].content // "") | gsub("[\r\n]+"; " "))' "$ARCH_DATASET" >> "$LOG_LORA_ENTRENAR" 2>/dev/null
 
 PY_BIN="$DIR_ENTRENAMIENTO/venv/Scripts/python.exe"
 if [[ ! -x "$PY_BIN" ]]; then

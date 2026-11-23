@@ -2,72 +2,60 @@
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)/../CONFIG"
 
+mkdir -p "$DIR_REGISTROS" "$DIR_REGISTROS_OLVIDO"
+
+if [[ -e "$PARADA_OLVIDO" ]]; then
+    exit 0
+fi
+
+# Control de instancia unica
+if [[ -s "$PID_OLVIDO" ]]; then
+    PID_PREV=$(cat "$PID_OLVIDO" 2>/dev/null)
+    if [[ -n "$PID_PREV" ]]; then
+        if [[ "$PID_PREV" != "$$" ]]; then
+            if kill -0 "$PID_PREV" 2>/dev/null; then
+                exit 0
+            fi
+        fi
+    fi
+fi
+
+echo "$$" > "$PID_OLVIDO"
+
+limpiar_olvido() {
+    if [[ -s "$PID_OLVIDO" ]]; then
+        PID_ACT=$(cat "$PID_OLVIDO" 2>/dev/null)
+        if [[ "$PID_ACT" == "$$" ]]; then
+            rm -f "$PID_OLVIDO" 2>/dev/null
+        fi
+    fi
+}
+trap limpiar_olvido EXIT
+
 SEG_PER=$(( (${DECAIMIENTO_PERSISTENTE}) * 3600 ))
 SEG_MEM=$(( (${DECAIMIENTO_MEMORIA}) * 3600 ))
 SEG_HIP=$(( (${DECAIMIENTO_HIPOCAMPO}) * 3600 ))
 CICLO_OLV="${INTERVALO_OLVIDO:-15}"
 
-ULTIMOS_OLVIDADOS=""
-TOTAL_OLVIDADOS=0
+LOG_OLV_HIP="$DIR_REGISTROS_OLVIDO/hipocampo.log"
+LOG_OLV_EPI="$DIR_REGISTROS_OLVIDO/episodica.log"
+LOG_OLV_PER="$DIR_REGISTROS_OLVIDO/persistente.log"
+LOG_OLV_PUR="$DIR_REGISTROS_OLVIDO/olvidado.log"
+
 T_ULTIMO=$(date +%s)
-
-decaer_particiones() {
-    CAPA_PREFIJO="$1"
-    CAPA_FACTOR="$2"
-    CAPA_INDICE="$3"
-    CAPA_TAG="$4"
-
-    for f in "$DIR_MEMORIA/${CAPA_PREFIJO}_"*.json; do
-        if [[ -s "$f" ]]; then
-            ANTES_M=$(wc -l < "$f")
-            jq -a -c --argjson d "$CAPA_FACTOR" --argjson umb "$UMBRAL_SIM" '
-                def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt);
-                .embedding = (if .embedding then (.embedding[:1024] | map(. * $d)) else null end) |
-                select(.embedding != null and norm(.embedding) >= $umb)
-            ' "$f" > "${f}.$$.tmp" 2>/dev/null
-            if [[ -f "${f}.$$.tmp" ]]; then
-                DESPUES_M=$(wc -l < "${f}.$$.tmp")
-                if [[ $DESPUES_M -lt $ANTES_M ]]; then
-                    OLVIDO_TXT=$(jq -r --argjson d "$CAPA_FACTOR" --argjson umb "$UMBRAL_SIM" '
-                        def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt);
-                        select(.embedding == null or (norm(.embedding) * $d) < $umb) |
-                        .messages[0].content // ""
-                    ' "$f" 2>/dev/null)
-                    while IFS= read -r linea_o; do
-                        if [[ -n "$linea_o" ]]; then
-                            TOTAL_OLVIDADOS=$((TOTAL_OLVIDADOS + 1))
-                            ULTIMOS_OLVIDADOS="  [$HORA_NOW] [$CAPA_TAG] ${linea_o:0:55}"$'\n'"$ULTIMOS_OLVIDADOS"
-                        fi
-                    done < <(printf '%s\n' "$OLVIDO_TXT")
-                fi
-                if [[ -f "$f" ]]; then
-                    if [[ ! "$f" -nt "${f}.$$.tmp" ]]; then
-                        mv -f "${f}.$$.tmp" "$f" 2>/dev/null
-                    else
-                        rm -f "${f}.$$.tmp" 2>/dev/null
-                    fi
-                else
-                    rm -f "${f}.$$.tmp" 2>/dev/null
-                fi
-            fi
-            if [[ ! -s "$f" ]]; then
-                NOMBRE_VACIO=$(basename "$f")
-                rm -f "$f"
-                TOTAL_OLVIDADOS=$((TOTAL_OLVIDADOS + 1))
-                ULTIMOS_OLVIDADOS="  [$HORA_NOW] [CAJON VACIO] Eliminado $NOMBRE_VACIO"$'\n'"$ULTIMOS_OLVIDADOS"
-                if [[ -s "$CAPA_INDICE" ]]; then
-                    jq -a -c --arg arch "$NOMBRE_VACIO" 'select(.archivo != $arch)' "$CAPA_INDICE" > "${CAPA_INDICE}.$$.tmp" 2>/dev/null
-                    if [[ -f "${CAPA_INDICE}.$$.tmp" ]]; then
-                        mv -f "${CAPA_INDICE}.$$.tmp" "$CAPA_INDICE" 2>/dev/null
-                    fi
-                fi
-            fi
-        fi
-    done
-}
+if [[ -s "$TS_OLVIDO" ]]; then
+    TS_PREV=$(cat "$TS_OLVIDO" 2>/dev/null)
+    if [[ -n "$TS_PREV" ]]; then
+        T_ULTIMO="$TS_PREV"
+    fi
+fi
 
 while true; do
-    HORA_NOW=$(date "+%H:%M:%S")
+    if [[ -e "$PARADA_OLVIDO" ]]; then
+        exit 0
+    fi
+
+    FECHA_NOW=$(date "+%Y-%m-%d %H:%M:%S")
     T_AHORA=$(date +%s)
     DT_SEG=$((T_AHORA - T_ULTIMO))
     if [[ $DT_SEG -lt 1 ]]; then DT_SEG=1; fi
@@ -84,6 +72,7 @@ while true; do
 
     if [[ $CONSOLIDANDO_ACTIVO -eq 0 ]]; then
         T_ULTIMO="$T_AHORA"
+        printf '%s\n' "$T_ULTIMO" > "$TS_OLVIDO"
         read -r FACTOR_DEC_PER FACTOR_DEC_MEM FACTOR_DEC_HIP < <(jq -r -n \
             --argjson sp "$SEG_PER" \
             --argjson sm "$SEG_MEM" \
@@ -98,95 +87,118 @@ while true; do
             ] | map(tostring) | join(" ")
         ')
 
-        if [[ -s "$HIPOCAMPO" ]]; then
-            ANTES_H=$(wc -l < "$HIPOCAMPO")
-            jq -a -c --argjson d "$FACTOR_DEC_HIP" --argjson umb "$UMBRAL_SIM" '
+        ARCHIVOS_DEC=( )
+        if [[ -s "$HIPOCAMPO" ]]; then ARCHIVOS_DEC+=("$HIPOCAMPO"); fi
+        for f in "$DIR_MEMORIA/${PREFIJO_EPISODICA}_"*.json "$DIR_MEMORIA/${PREFIJO_PERSISTENTE}_"*.json; do
+            if [[ -s "$f" ]]; then ARCHIVOS_DEC+=("$f"); fi
+        done
+
+        printf '=== HIPOCAMPO | %s | Decaimiento: %sh | Umbral: %s ===\n' "$FECHA_NOW" "$DECAIMIENTO_HIPOCAMPO" "$UMBRAL_SIM" > "${LOG_OLV_HIP}.$$.tmp"
+        printf '=== EPISODICA | %s | Decaimiento: %sh | Umbral: %s ===\n' "$FECHA_NOW" "$DECAIMIENTO_MEMORIA" "$UMBRAL_SIM" > "${LOG_OLV_EPI}.$$.tmp"
+        printf '=== PERSISTENTE | %s | Decaimiento: %sh | Umbral: %s ===\n' "$FECHA_NOW" "$DECAIMIENTO_PERSISTENTE" "$UMBRAL_SIM" > "${LOG_OLV_PER}.$$.tmp"
+
+        if [[ ${#ARCHIVOS_DEC[@]} -gt 0 ]]; then
+            for f in "${ARCHIVOS_DEC[@]}"; do
+                > "${f}.$$.tmp"
+            done
+
+            OLVIDOS_CICLO=$(awk -F'\t' -v pid="$$" -v umb="$UMBRAL_SIM" \
+                -v lh="${LOG_OLV_HIP}.$$.tmp" -v le="${LOG_OLV_EPI}.$$.tmp" -v lp="${LOG_OLV_PER}.$$.tmp" '
+                $1 == "V" {
+                    tmp = $2 "." pid ".tmp"
+                    print $3 > tmp
+                    usados[tmp] = 1
+                }
+                $1 == "S" {
+                    norma = $3 + 0
+                    pct = ((norma - umb) / (1.0 - umb)) * 100.0
+                    if (pct < 0) pct = 0
+                    if (pct > 100) pct = 100
+                    linea = sprintf("%.6f (%5.1f%%) | %s", norma, pct, $4)
+                    if ($2 == "H") print linea >> lh
+                    else if ($2 == "P") print linea >> lp
+                    else print linea >> le
+                }
+                $1 == "O" {
+                    print $2 "\t" $3
+                }
+                END {
+                    for (t in usados) close(t)
+                    close(lh)
+                    close(le)
+                    close(lp)
+                }
+            ' < <(jq -r \
+                --argjson dp "$FACTOR_DEC_PER" \
+                --argjson dm "$FACTOR_DEC_MEM" \
+                --argjson dh "$FACTOR_DEC_HIP" \
+                --argjson umb "$UMBRAL_SIM" \
+                --arg h "$(basename "$HIPOCAMPO")" \
+                --arg pp "${PREFIJO_PERSISTENTE}_" '
                 def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt);
+                (input_filename) as $fn |
+                (if ($fn | endswith($h)) then "H" elif ($fn | contains($pp)) then "P" else "E" end) as $capa |
+                (if $capa == "H" then $dh elif $capa == "P" then $dp else $dm end) as $d |
                 .embedding = (if .embedding then (.embedding[:1024] | map(. * $d)) else null end) |
-                select(.embedding != null and norm(.embedding) >= $umb)
-            ' "$HIPOCAMPO" > "${HIPOCAMPO}.$$.tmp" 2>/dev/null
-            if [[ -f "${HIPOCAMPO}.$$.tmp" ]]; then
-                DESPUES_H=$(wc -l < "${HIPOCAMPO}.$$.tmp")
-                if [[ $DESPUES_H -lt $ANTES_H ]]; then
-                    OLVIDO_TXT=$(jq -r --argjson d "$FACTOR_DEC_HIP" --argjson umb "$UMBRAL_SIM" '
-                        def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt);
-                        select(.embedding == null or (norm(.embedding) * $d) < $umb) |
-                        .messages[0].content // ""
-                    ' "$HIPOCAMPO" 2>/dev/null)
-                    while IFS= read -r linea_o; do
-                        if [[ -n "$linea_o" ]]; then
-                            TOTAL_OLVIDADOS=$((TOTAL_OLVIDADOS + 1))
-                            ULTIMOS_OLVIDADOS="  [$HORA_NOW] [HIPOCAMPO]   ${linea_o:0:55}"$'\n'"$ULTIMOS_OLVIDADOS"
-                        fi
-                    done < <(printf '%s\n' "$OLVIDO_TXT")
-                fi
-                if [[ -f "$HIPOCAMPO" ]]; then
-                    if [[ ! "$HIPOCAMPO" -nt "${HIPOCAMPO}.$$.tmp" ]]; then
-                        mv -f "${HIPOCAMPO}.$$.tmp" "$HIPOCAMPO" 2>/dev/null
-                    else
-                        rm -f "${HIPOCAMPO}.$$.tmp" 2>/dev/null
-                    fi
+                (if .embedding != null then norm(.embedding) else 0 end) as $nv |
+                ((.messages[0].content // "") | gsub("[\r\n\t]+"; " ")) as $u |
+                if (.embedding != null and $nv >= $umb) then
+                    "V\t" + $fn + "\t" + (. | tojson) + "\nS\t" + $capa + "\t" + ($nv | tostring) + "\t" + $u
                 else
-                    rm -f "${HIPOCAMPO}.$$.tmp" 2>/dev/null
-                fi
+                    "O\t" + $fn + "\t" + $u
+                end
+            ' "${ARCHIVOS_DEC[@]}" 2>/dev/null))
+
+            if [[ -n "$OLVIDOS_CICLO" ]]; then
+                while IFS=$'\t' read -r ruta_o linea_o; do
+                    if [[ -n "$linea_o" ]]; then
+                        TAG_O="EPISODICA"
+                        if [[ "$ruta_o" == "$HIPOCAMPO" ]]; then
+                            TAG_O="HIPOCAMPO"
+                        elif [[ "$(basename "$ruta_o")" == "${PREFIJO_PERSISTENTE}_"* ]]; then
+                            TAG_O="PERSISTENTE"
+                        fi
+                        printf '[%s] [%s] %s\n' "$FECHA_NOW" "$TAG_O" "$linea_o" >> "$LOG_OLV_PUR"
+                    fi
+                done < <(printf '%s\n' "$OLVIDOS_CICLO")
             fi
+
+            for f in "${ARCHIVOS_DEC[@]}"; do
+                if [[ -f "${f}.$$.tmp" ]]; then
+                    if [[ -f "$f" ]]; then
+                        if [[ ! "$f" -nt "${f}.$$.tmp" ]]; then
+                            mv -f "${f}.$$.tmp" "$f" 2>/dev/null
+                        else
+                            rm -f "${f}.$$.tmp" 2>/dev/null
+                        fi
+                    else
+                        rm -f "${f}.$$.tmp" 2>/dev/null
+                    fi
+                fi
+                if [[ "$f" != "$HIPOCAMPO" ]]; then
+                    if [[ ! -s "$f" ]]; then
+                        NOMBRE_VACIO=$(basename "$f")
+                        rm -f "$f"
+                        printf '[%s] [CAJON VACIO] Eliminado %s\n' "$FECHA_NOW" "$NOMBRE_VACIO" >> "$LOG_OLV_PUR"
+                        CAPA_IND="$INDICE_EPISODICA"
+                        if [[ "$NOMBRE_VACIO" == "${PREFIJO_PERSISTENTE}_"* ]]; then
+                            CAPA_IND="$INDICE_PERSISTENTE"
+                        fi
+                        if [[ -s "$CAPA_IND" ]]; then
+                            jq -a -c --arg arch "$NOMBRE_VACIO" 'select(.archivo != $arch)' "$CAPA_IND" > "${CAPA_IND}.$$.tmp" 2>/dev/null
+                            if [[ -f "${CAPA_IND}.$$.tmp" ]]; then
+                                mv -f "${CAPA_IND}.$$.tmp" "$CAPA_IND" 2>/dev/null
+                            fi
+                        fi
+                    fi
+                fi
+            done
         fi
 
-        decaer_particiones "$PREFIJO_PERSISTENTE" "$FACTOR_DEC_PER" "$INDICE_PERSISTENTE" "PERSISTENTE"
-        decaer_particiones "$PREFIJO_EPISODICA" "$FACTOR_DEC_MEM" "$INDICE_EPISODICA" "EPISODICA  "
+        mv -f "${LOG_OLV_HIP}.$$.tmp" "$LOG_OLV_HIP" 2>/dev/null
+        mv -f "${LOG_OLV_EPI}.$$.tmp" "$LOG_OLV_EPI" 2>/dev/null
+        mv -f "${LOG_OLV_PER}.$$.tmp" "$LOG_OLV_PER" 2>/dev/null
     fi
 
-    ARCHIVOS_VISOR=( )
-    if [[ -s "$HIPOCAMPO" ]]; then ARCHIVOS_VISOR+=("$HIPOCAMPO"); fi
-    for f in "$DIR_MEMORIA/${PREFIJO_EPISODICA}_"*.json "$DIR_MEMORIA/${PREFIJO_PERSISTENTE}_"*.json; do
-        if [[ -s "$f" ]]; then ARCHIVOS_VISOR+=("$f"); fi
-    done
-
-    PANEL=""
-    if [[ ${#ARCHIVOS_VISOR[@]} -gt 0 ]]; then
-        PANEL=$(jq -n -r --argjson umb "$UMBRAL_SIM" --arg h "$(basename "$HIPOCAMPO")" --arg pp "${PREFIJO_PERSISTENTE}_" --argjson vh "$VISOR_HIPOCAMPO" --argjson ve "$VISOR_EPISODICA" --argjson vp "$VISOR_PERSISTENTE" '
-            def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt);
-            def fmt8: (((. * 100000000) | round) / 100000000 | tostring | . + ("0" * 10))[:10];
-            def pct: (((((. - $umb) / (1.0 - $umb)) * 1000) | round) / 10);
-            def clampPct: if . < 0 then 0 elif . > 100 then 100 else . end;
-            def barra($v):
-                ($v | pct | clampPct) as $pr |
-                (($pr / 10) | floor) as $llenos |
-                ("#" * $llenos) + ("." * (10 - $llenos)) + " " + ($pr | tostring) + "%";
-            def seccion($titulo; $lista; $lim):
-                "\($titulo) (\($lista | length) vivos):",
-                (
-                    if ($lista | length) == 0 then
-                        "  (vacio)"
-                    else
-                        ($lista | sort_by(.f)[:$lim][ ] | "  \(.f | fmt8) (\(.f | barra(.))) \(.u[:48])")
-                    end
-                );
-            [ inputs | select(type == "object" and .embedding != null) | {
-                capa: (if (input_filename | endswith($h)) then "H" elif (input_filename | contains($pp)) then "P" else "E" end),
-                u: (.messages[0].content // ""),
-                f: norm(.embedding)
-            } ] as $todos |
-            seccion("HIPOCAMPO  "; [ $todos[ ] | select(.capa == "H") ]; $vh),
-            seccion("EPISODICA  "; [ $todos[ ] | select(.capa == "E") ]; $ve),
-            seccion("PERSISTENTE"; [ $todos[ ] | select(.capa == "P") ]; $vp)
-        ' "${ARCHIVOS_VISOR[@]}" 2>/dev/null)
-    fi
-
-    printf '\033[H\033[J'
-    echo "=== OLVIDO EN TIEMPO REAL | $(date "+%Y-%m-%d %H:%M:%S") | Ciclo: ${CICLO_OLV}s | Umbral: $UMBRAL_SIM | q: salir ==="
-    echo "Ritmo -> Hipocampo: ${DECAIMIENTO_HIPOCAMPO}h | Episodica: ${DECAIMIENTO_MEMORIA}h | Persistente: ${DECAIMIENTO_PERSISTENTE}h"
-    echo ""
-    echo "$PANEL"
-    echo ""
-    echo "ULTIMOS OLVIDADOS (sesion: $TOTAL_OLVIDADOS):"
-    if [[ -n "$ULTIMOS_OLVIDADOS" ]]; then
-        head -n "$VISOR_OLVIDADOS" < <(printf '%s' "$ULTIMOS_OLVIDADOS")
-    else
-        echo "  (ninguno olvidado aun en esta sesion)"
-    fi
-
-    read -t "$CICLO_OLV" -n 1 tecla
-    if [[ "$tecla" == "q" ]]; then echo; exit 0; fi
-
+    sleep "$CICLO_OLV"
 done

@@ -42,12 +42,6 @@ DECAIMIENTO_MEMORIA="24*7"
 DECAIMIENTO_HIPOCAMPO="24"
 INTERVALO_OLVIDO="15"
 
-# Informacion del estado actual de la memoria
-VISOR_HIPOCAMPO="5"
-VISOR_EPISODICA="5"
-VISOR_PERSISTENTE="5"
-VISOR_OLVIDADOS="8"
-
 # Directorios
 DIR_HERRAMIENTAS="$DIR/HERRAMIENTAS"
 DIR_MODULOS="$DIR/MODULOS"
@@ -97,6 +91,11 @@ URL_LORA="http://${HOST}:${PUERTO}/lora-adapters"
 HISTORIAL="$DIR_REGISTROS/historial.log"
 LOG_SERVER="$DIR_REGISTROS/server.log"
 LOCK_MEMORIA="$DIR_REGISTROS/consolidando.lock"
+DIR_REGISTROS_OLVIDO="$DIR_REGISTROS/OLVIDO"
+PID_OLVIDO="$DIR_REGISTROS/olvido.pid"
+TS_OLVIDO="$DIR_REGISTROS/olvido.ts"
+PARADA_OLVIDO="$DIR_MEMORIA/OLVIDO_PARADA"
+LOG_LORA_ENTRENAR="$DIR_REGISTROS/lora_entrenar.log"
 
 # Aburrimiento (despertar automatico y tiempo despierto en segundos)
 TIEMPO_DESPIERTO="5*60"
@@ -108,6 +107,7 @@ ESTIMULO_DORMIR="<<Te duermes>>"
 
 # Mecanismo de sueno (Ligero -> Profundo -> REM con consolidacion pausable en LoRA)
 DIR_SUENO="$DIR_MEMORIA/SUENO"
+DIR_SANDBOX_SUENO="$DIR/SUEÑO"
 PID_DORMIR="$DIR_REGISTROS/dormir.pid"
 SENAL_DESPERTAR="$DIR_REGISTROS/despertar.senal"
 LOG_SUENO="$DIR_REGISTROS/sueno.log"

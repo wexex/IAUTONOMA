@@ -124,6 +124,21 @@ else
             true < <(setsid "$DIR/DESPERTAR/ABURRIMIENTO" </dev/null >/dev/null 2>/dev/null)
         fi
 
+        if [[ ! -e "$PARADA_OLVIDO" ]]; then
+            OLVIDO_VIVO=0
+            if [[ -s "$PID_OLVIDO" ]]; then
+                OPID=$(cat "$PID_OLVIDO" 2>/dev/null)
+                if [[ -n "$OPID" ]]; then
+                    if kill -0 "$OPID" 2>/dev/null; then
+                        OLVIDO_VIVO=1
+                    fi
+                fi
+            fi
+            if [[ $OLVIDO_VIVO -eq 0 ]]; then
+                true < <(setsid "$DIR/DESPERTAR/OLVIDO" --daemon </dev/null >/dev/null 2>/dev/null)
+            fi
+        fi
+
         if [[ $ACABA_DE_DESPERTAR -eq 1 ]]; then
             ENTRADA="[$FECHA_HORA] $ESTIMULO_DESPERTAR $ENTRADA"
         fi

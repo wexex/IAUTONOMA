@@ -56,6 +56,7 @@ limpiar_al_salir() {
             rm -f "$LOCK_MEMORIA" 2>/dev/null
         fi
     fi
+    rm -rf "$DIR_SANDBOX_SUENO" 2>/dev/null
     rm -f "$PID_DORMIR" 2>/dev/null
 }
 trap limpiar_al_salir EXIT
@@ -672,6 +673,12 @@ fase_ligero() {
             else
                 registrar_sueno "[N1/N2 LIGERO] Nueva particion preparada $TAREA_ELEGIDA (clase=$CLASE_SEL ; $NUM_EJ recuerdos desde $PART_ELEGIDA ; max=$MAX_LORA ; epocas_iniciales=$EP_INIT)."
             fi
+
+            MODO_REG_L="nueva"
+            if [[ $ES_FUSION -eq 1 ]]; then MODO_REG_L="fusion"; fi
+            printf '[%s] SUENO LoRA=%s | clase=%s | modo=%s | origen=%s | ejemplos=%s | epocas_obj=%s\n' \
+                "$(date "+%Y-%m-%d %H:%M:%S")" "$TAREA_ELEGIDA" "$CLASE_SEL" "$MODO_REG_L" "$PART_ELEGIDA" "$NUM_EJ" "$EP_INIT" >> "$LOG_LORA_ENTRENAR"
+            jq -r '"  - " + ((.u // "") | gsub("[\r\n]+"; " "))' "$DIR_TAREA/origen.json" >> "$LOG_LORA_ENTRENAR" 2>/dev/null
         fi
     fi
 }
@@ -749,7 +756,140 @@ fase_profundo() {
     fi
 }
 
-# FASE 3: SUENO REM (Solo testea: paralisis motora real + examen semantico y de uso/lectura + rollback + promocion y vaciado)
+crear_sandbox_sueno() {
+    rm -rf "$DIR_SANDBOX_SUENO" 2>/dev/null
+    mkdir -p \
+        "$DIR_SANDBOX_SUENO/DESPERTAR" \
+        "$DIR_SANDBOX_SUENO/HERRAMIENTAS" \
+        "$DIR_SANDBOX_SUENO/MODULOS" \
+        "$DIR_SANDBOX_SUENO/LORA/DATASETS" \
+        "$DIR_SANDBOX_SUENO/MEMORIA/MODULOS" \
+        "$DIR_SANDBOX_SUENO/MEMORIA/LORA" \
+        "$DIR_SANDBOX_SUENO/REGISTROS/OLVIDO"
+}
+
+poblar_sandbox_recuerdo() {
+    CMD_REC="$1"
+    OUT_REC="$2"
+    CMD_REC="${CMD_REC#\# Modulo: }"
+    CMD_REC="${CMD_REC#\# modulo: }"
+    CMD_REC="${CMD_REC#Modulo: }"
+    CMD_REC="${CMD_REC#bash:}"
+    CMD_REC="${CMD_REC#bash }"
+    MOD_REC="${CMD_REC%% *}"
+    REST_REC="${CMD_REC#"$MOD_REC"}"
+    REST_REC="${REST_REC# }"
+    ARG_REC="${REST_REC%% *}"
+    ARG_REL="${ARG_REC#/}"
+
+    if [[ "$MOD_REC" == "mirar" ]]; then
+        if [[ -n "$ARG_REL" ]]; then
+            if [[ "$ARG_REL" != *".."* ]]; then
+                if [[ "$OUT_REC" == Error:* ]]; then
+                    rm -f "$DIR_SANDBOX_SUENO/$ARG_REL" 2>/dev/null
+                else
+                    mkdir -p "$DIR_SANDBOX_SUENO/$(dirname "$ARG_REL")" 2>/dev/null
+                    printf '%s\n' "$OUT_REC" > "$DIR_SANDBOX_SUENO/$ARG_REL" 2>/dev/null
+                fi
+            fi
+        fi
+    elif [[ "$MOD_REC" == "listar" ]]; then
+        SUB_DIR="$DIR_SANDBOX_SUENO"
+        if [[ -n "$ARG_REL" ]]; then
+            if [[ "$ARG_REL" != *".."* ]]; then
+                SUB_DIR="$DIR_SANDBOX_SUENO/$ARG_REL"
+                mkdir -p "$SUB_DIR" 2>/dev/null
+            fi
+        fi
+        while IFS= read -r l_arch; do
+            if [[ -n "$l_arch" ]]; then
+                if [[ "$l_arch" != *"/"* ]]; then
+                    if [[ "$l_arch" != *".."* ]]; then
+                        if [[ ! -d "$SUB_DIR/$l_arch" ]]; then
+                            : > "$SUB_DIR/$l_arch" 2>/dev/null
+                        fi
+                    fi
+                fi
+            fi
+        done < <(printf '%s\n' "$OUT_REC")
+    else
+        case "$MOD_REC" in
+            identificar|escribir|anadir|editar)
+                if [[ -n "$ARG_REL" ]]; then
+                    if [[ "$ARG_REL" != *".."* ]]; then
+                        if [[ "$OUT_REC" != Error:* ]]; then
+                            mkdir -p "$DIR_SANDBOX_SUENO/$(dirname "$ARG_REL")" 2>/dev/null
+                            if [[ ! -e "$DIR_SANDBOX_SUENO/$ARG_REL" ]]; then
+                                : > "$DIR_SANDBOX_SUENO/$ARG_REL" 2>/dev/null
+                            fi
+                        fi
+                    fi
+                fi
+                ;;
+            buscar_texto)
+                ARG2_REC="${REST_REC#"$ARG_REC"}"
+                ARG2_REC="${ARG2_REC# }"
+                ARG2_REL="${ARG2_REC#/}"
+                if [[ -n "$ARG2_REL" ]]; then
+                    if [[ "$ARG2_REL" != *".."* ]]; then
+                        mkdir -p "$DIR_SANDBOX_SUENO/$(dirname "$ARG2_REL")" 2>/dev/null
+                        if [[ "$OUT_REC" != Error:* ]]; then
+                            printf '%s\n' "$OUT_REC" > "$DIR_SANDBOX_SUENO/$ARG2_REL" 2>/dev/null
+                        fi
+                    fi
+                fi
+                ;;
+        esac
+    fi
+}
+
+ejecutar_en_sandbox_sueno() {
+    CMD_SB="$1"
+    MOD_REC="$2"
+    OUT_REC="$3"
+
+    CMD_SB="${CMD_SB#\# Modulo: }"
+    CMD_SB="${CMD_SB#\# modulo: }"
+    CMD_SB="${CMD_SB#Modulo: }"
+    CMD_SB="${CMD_SB#bash:}"
+    CMD_SB="${CMD_SB#bash }"
+    CMD_SB="${CMD_SB%% - *}"
+    MOD_SB="${CMD_SB%% *}"
+
+    if grep -qE '(\.\.|(^|[[:space:]])/|[A-Za-z]:\\|~|\brm\b|\bmkfs\b|\bdd\b|\bchmod\b|\bshutdown\b|\breboot\b|\bpoweroff\b|\bsubir_github\b|&|;|\|)' < <(printf '%s' "$CMD_SB"); then
+        echo "Error: fuera de los limites del sandbox SUENO ($CMD_SB)"
+    else
+        case "$MOD_SB" in
+            hora|fecha|maquina|buscar_internet|meteo_*)
+                if [[ "$MOD_SB" == "$MOD_REC" ]]; then
+                    if [[ -n "$OUT_REC" ]]; then
+                        printf '%s\n' "$OUT_REC"
+                    else
+                        echo "(sin datos de $MOD_SB en este recuerdo)"
+                    fi
+                else
+                    echo "(sin datos de $MOD_SB en este recuerdo)"
+                fi
+                ;;
+            ruta)
+                if [[ -n "$OUT_REC" ]]; then
+                    if [[ "$MOD_REC" == "ruta" ]]; then
+                        printf '%s\n' "$OUT_REC"
+                    else
+                        echo "La ruta es: /SUENO"
+                    fi
+                else
+                    echo "La ruta es: /SUENO"
+                fi
+                ;;
+            *)
+                head -c 4000 < <(timeout "$TIMEOUT_HERRAMIENTA" bash -c 'cd "$1" && for f in "$2"/*; do if [[ -f "$f" ]]; then source "$f"; fi; done; eval "$3"' _ "$DIR_SANDBOX_SUENO" "$DIR_MODULOS" "$CMD_SB" 2>/dev/null)
+                ;;
+        esac
+    fi
+}
+
+# FASE 3: SUENO REM (Sandbox fisico SUEÑO/ + doble rol usuario/agente + paralisis del SO real)
 fase_rem() {
     NOM_T="$1"
     DIR_T="$DIR_SUENO/$NOM_T"
@@ -761,7 +901,8 @@ fase_rem() {
     if [[ $DESPERTO -eq 1 ]]; then
         REM_PAUSADO=1
     else
-        registrar_sueno "[REM] Iniciando fase REM (paralisis motora, clase=$CLASE_T) para $NOM_T..."
+        registrar_sueno "[REM] Iniciando fase REM (sandbox SUEÑO/ con doble rol, clase=$CLASE_T) para $NOM_T..."
+        crear_sandbox_sueno
 
         true < <(setsid "$DIR/DESPERTAR/MEMORIA" </dev/null >/dev/null 2>/dev/null)
 
@@ -806,9 +947,11 @@ fase_rem() {
 
         if [[ $REM_PAUSADO -eq 1 ]]; then
             apagar_servidores
+            rm -rf "$DIR_SANDBOX_SUENO" 2>/dev/null
             registrar_sueno "[REM] Pausado por despertar del usuario antes del examen ($NOM_T)."
         elif [[ $SERV_OK -eq 0 ]]; then
             apagar_servidores
+            rm -rf "$DIR_SANDBOX_SUENO" 2>/dev/null
             registrar_sueno "[REM] Error: no respondieron los servidores en fase REM ($NOM_T)."
         else
             SYS_REM='- Eres IAUTONOMA, un agente autonomo local con memoria persistente en disco (MEMORIA/) y acceso real al sistema operativo y terminal de Linux mediante la herramienta bash.
@@ -864,7 +1007,8 @@ fase_rem() {
                                     MOD_ESP="${MOD_ESP#bash }"
                                     MOD_ESP="${MOD_ESP%% *}"
 
-                                    # Enrutar Top-K modulos dinamicos para esta pregunta (sin ejecutar nada en el SO)
+                                    # Enrutar Top-K modulos dinamicos para esta pregunta (confinado en SUEÑO/)
+                                    poblar_sandbox_recuerdo "$TCMD_ESP" "$TOUT_SIM"
                                     PAY_Q=$(jq -a -n --arg t "$PREG_R" '{input: $t}')
                                     RESP_Q=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_Q" 2>/dev/null)
                                     VEC_R=$(jq -c 'if .data then (.data[0].embedding | map((. * 10000 | round) / 10000)) else null end' < <(printf '%s' "$RESP_Q") 2>/dev/null)
@@ -872,7 +1016,7 @@ fase_rem() {
                                     SPEC_R=$(VEC_CONSULTA="$VEC_R" "$DIR_HERRAMIENTAS/bash" --spec "$PREG_R" 2>/dev/null)
                                     TOOLS_R=$(jq -s '.' < <(printf '%s' "$SPEC_R") 2>/dev/null)
 
-                                    # Entendimiento 1 (ESCRIBIR / INVOCAR herramienta bajo paralisis motora)
+                                    # Doble rol REM: usuario simulado lanza PREG_R; modelo responde asumiendo SUEÑO/ real
                                     PAY_USO=$(jq -a -n --arg sys "$SYS_REM_HERR" --arg u "$PREG_R" --argjson tls "$TOOLS_R" --argjson temp "$TEMPERATURA" --argjson rpen "${PENALIZACION_REPETICION:-1.05}" '{
                                         messages: [
                                             {"role": "system", "content": $sys},
@@ -893,6 +1037,7 @@ fase_rem() {
                                     MOD_PRED="(ninguno)"
                                     TID_USO="call_rem_1"
                                     TNAME_USO="$TNAME_ESP"
+                                    CMD_PRED=""
                                     if [[ "${NUM_TC:-0}" -gt 0 ]]; then
                                         TNAME_USO=$(jq -r '.choices[0].message.tool_calls[0].function.name // "bash"' < <(printf '%s' "$RESP_USO") 2>/dev/null)
                                         TID_USO=$(jq -r '.choices[0].message.tool_calls[0].id // "call_rem_1"' < <(printf '%s' "$RESP_USO") 2>/dev/null)
@@ -912,17 +1057,19 @@ fase_rem() {
                                         fi
                                     fi
 
-                                    # Entendimiento 2 (LEER / INTERPRETAR salida simulada sin ejecutar nada real)
+                                    # Entendimiento 2 (ejecucion real dentro del sandbox SUEÑO/ + lectura de resultado)
                                     SIM_VAL="0"
                                     TXT_REM=""
                                     if [[ $OK_USO -eq 1 ]]; then
+                                        SALIDA_SB=$(ejecutar_en_sandbox_sueno "$CMD_PRED" "$MOD_ESP" "$TOUT_SIM")
+                                        if [[ -z "$SALIDA_SB" ]]; then SALIDA_SB="(sin salida)"; fi
                                         PAY_LECT=$(jq -a -n \
                                             --arg sys "$SYS_REM_HERR" \
                                             --arg u "$PREG_R" \
                                             --argjson msgc "$MSG_USO" \
                                             --arg tid "$TID_USO" \
                                             --arg tname "$TNAME_USO" \
-                                            --arg tout "$TOUT_SIM" \
+                                            --arg tout "$SALIDA_SB" \
                                             --argjson tls "$TOOLS_R" \
                                             --argjson temp "$TEMPERATURA" \
                                             --argjson rpen "${PENALIZACION_REPETICION:-1.05}" '{
@@ -986,18 +1133,31 @@ fase_rem() {
                         if [[ -n "$PREG_R" ]]; then
                             if [[ -n "$ESP_R" ]]; then
                                 TOTAL_EXAM=$((TOTAL_EXAM + 1))
-                                PAY_REM=$(jq -a -n --arg sys "$SYS_REM" --arg u "$PREG_R" --argjson temp "$TEMPERATURA" --argjson rpen "${PENALIZACION_REPETICION:-1.05}" '{
+                                PAY_QD=$(jq -a -n --arg t "$PREG_R" '{input: $t}')
+                                RESP_QD=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_QD" 2>/dev/null)
+                                VEC_RD=$(jq -c 'if .data then (.data[0].embedding | map((. * 10000 | round) / 10000)) else null end' < <(printf '%s' "$RESP_QD") 2>/dev/null)
+                                if [[ -z "$VEC_RD" ]]; then VEC_RD="null"; fi
+                                SPEC_RD=$(VEC_CONSULTA="$VEC_RD" "$DIR_HERRAMIENTAS/bash" --spec "$PREG_R" 2>/dev/null)
+                                TOOLS_RD=$(jq -s '.' < <(printf '%s' "$SPEC_RD") 2>/dev/null)
+
+                                PAY_REM=$(jq -a -n --arg sys "$SYS_REM_HERR" --arg u "$PREG_R" --argjson tls "$TOOLS_RD" --argjson temp "$TEMPERATURA" --argjson rpen "${PENALIZACION_REPETICION:-1.05}" '{
                                     messages: [
                                         {"role": "system", "content": $sys},
                                         {"role": "user", "content": $u}
                                     ],
+                                    tools: $tls,
+                                    tool_choice: "auto",
                                     temperature: $temp,
                                     repeat_penalty: $rpen,
                                     max_tokens: 180,
                                     stop: ["<tool_call>", "</tool_call>", "<response>"]
                                 }')
                                 RESP_REM=$(curl -sf "$URL" -H "Content-Type: application/json" -d "$PAY_REM" 2>/dev/null)
-                                TXT_REM=$(jq -r '(.choices[0].message.content // "") | gsub("[\r\n]+"; " ")' < <(printf '%s' "$RESP_REM") 2>/dev/null)
+                                TC_D=$(jq -r '(.choices[0].message.tool_calls // [ ]) | length' < <(printf '%s' "$RESP_REM") 2>/dev/null)
+                                TXT_REM=""
+                                if [[ "${TC_D:-0}" -eq 0 ]]; then
+                                    TXT_REM=$(jq -r '(.choices[0].message.content // "") | gsub("[\r\n]+"; " ")' < <(printf '%s' "$RESP_REM") 2>/dev/null)
+                                fi
 
                                 SIM_VAL="0"
                                 if [[ -n "$TXT_REM" ]]; then
@@ -1032,6 +1192,7 @@ fase_rem() {
             done < "$DIR_T/origen.json"
 
             apagar_servidores
+            rm -rf "$DIR_SANDBOX_SUENO" 2>/dev/null
 
             if [[ $REM_PAUSADO -eq 1 ]]; then
                 registrar_sueno "[REM] Interrumpido por despertar durante examen ($NOM_T). Se retomara en fase REM."
@@ -1142,6 +1303,23 @@ fase_rem() {
 registrar_sueno "=== INICIO DE SUENO (PID=$$, modelo=$NOMBRE_IA) ==="
 
 while true; do
+    if [[ ! -e "$PARADA_OLVIDO" ]]; then
+        OLV_VIVO=0
+        if [[ -s "$PID_OLVIDO" ]]; then
+            OPID_D=$(cat "$PID_OLVIDO" 2>/dev/null)
+            if [[ -n "$OPID_D" ]]; then
+                if kill -0 "$OPID_D" 2>/dev/null; then
+                    OLV_VIVO=1
+                fi
+            fi
+        fi
+        if [[ $OLV_VIVO -eq 0 ]]; then
+            if [[ -x "$DIR/DESPERTAR/OLVIDO" ]]; then
+                true < <(setsid "$DIR/DESPERTAR/OLVIDO" --daemon </dev/null >/dev/null 2>/dev/null)
+            fi
+        fi
+    fi
+
     comprobar_despertar
     if [[ $DESPERTO -eq 1 ]]; then
         registrar_sueno "=== DESPERTAR DETECTADO: fin limpio de DORMIR ==="
