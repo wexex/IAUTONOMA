@@ -3,10 +3,10 @@
 
 crear_dir() {
     if [[ -n "$1" ]]; then
-        if mkdir -p "$1"; then echo "Carpeta: $1"; else false; fi
+        if mkdir -p "$1"; then echo "Carpeta: $1"; else test 0 -eq 1; fi
     else
         echo "Error: falta ruta"
-        false
+        test 0 -eq 1
     fi
 }
 

@@ -2,25 +2,22 @@
 # Modulo: buscar_internet <consulta> - Busca informacion actualizada y resultados en internet o la web
 
 buscar_internet() {
-    local query="$*"
-    if [[ -n "$query" ]]; then
-        local html
-        html=$(curl -sG -A "Mozilla/5.0" --max-time 8 "https://lite.duckduckgo.com/lite/" --data-urlencode "q=$query")
-        local filtrado
-        filtrado=$(grep -A 1 "result-snippet" <<< "$html")
-        local limpio
-        limpio=$(sed -E 's/<[^>]+>//g; s/^[[:space:]]+//; s/^--$//; s/&amp;/\&/g; s/&quot;/"/g; s/&#39;/'"'"'/g' <<< "$filtrado")
-        local count=0
-        local linea=""
-        while IFS= read -r linea; do
-            if [[ -n "$linea" ]]; then
-                echo "$linea"
-                count=$((count + 1))
-                if [[ $count -ge 6 ]]; then break; fi
+    BI_QUERY="$*"
+    if [[ -n "$BI_QUERY" ]]; then
+        BI_HTML=$(curl -sG -A "Mozilla/5.0" --max-time 8 "https://lite.duckduckgo.com/lite/" --data-urlencode "q=$BI_QUERY")
+        BI_FILT=$(grep -A 1 "result-snippet" < <(printf '%s\n' "$BI_HTML"))
+        BI_LIMP=$(sed -E 's/<[^>]+>//g; s/^[[:space:]]+//; s/^--$//; s/\x26amp;/\x26/g; s/\x26quot;/"/g; s/\x26#39;/'"'"'/g' < <(printf '%s\n' "$BI_FILT"))
+        BI_COUNT=0
+        BI_LINEA=""
+        while IFS= read -r BI_LINEA; do
+            if [[ -n "$BI_LINEA" ]]; then
+                echo "$BI_LINEA"
+                BI_COUNT=$((BI_COUNT + 1))
+                if [[ $BI_COUNT -ge 6 ]]; then break; fi
             fi
-        done <<< "$limpio"
+        done < <(printf '%s\n' "$BI_LIMP")
     else
         echo "Error: falta la consulta"
-        false
+        test 0 -eq 1
     fi
 }

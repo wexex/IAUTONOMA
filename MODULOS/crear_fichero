@@ -3,9 +3,9 @@
 
 crear_fichero() {
     if [[ -n "$1" ]]; then
-        if touch "$1"; then echo "Fichero: $1"; else false; fi
+        if touch "$1"; then echo "Fichero: $1"; else test 0 -eq 1; fi
     else
         echo "Error: falta ruta"
-        false
+        test 0 -eq 1
     fi
 }

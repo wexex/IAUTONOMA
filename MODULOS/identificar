@@ -15,7 +15,7 @@ identificar() {
         }
 
         # Identifica el tipo de archivo
-          if [[ -f "$1" ]]; then echo "$1 es un fichero"; vacio "$1"
+        if [[ -f "$1" ]]; then echo "$1 es un fichero"; vacio "$1"
         elif [[ -d "$1" ]]; then echo "$1 es una carpeta"; vacio "$1"
         elif [[ -S "$1" ]]; then echo "$1 es un socket"; vacio "$1"
         elif [[ -p "$1" ]]; then echo "$1 es un pipe"; vacio "$1"
@@ -25,9 +25,9 @@ identificar() {
     }
 
     if [[ -L "$1" ]]; then
-        if [[ -e "$1" ]]; then echo "enlace simbolico: $(tipo "$1")"; else echo "$1 es un enlace simbolico roto"; false; fi
+        if [[ -e "$1" ]]; then echo "enlace simbolico: $(tipo "$1")"; else echo "$1 es un enlace simbolico roto"; test 0 -eq 1; fi
     elif [[ -e "$1" ]]; then tipo "$1"
-    elif command -v "$1" >/dev/null 2>&1; then echo "$1 es un comando ($(type -t "$1"))"
-    else echo "$1 no existe"; false
+    elif command -v "$1" >/dev/null 2>/dev/null; then echo "$1 es un comando ($(type -t "$1"))"
+    else echo "$1 no existe"; test 0 -eq 1
     fi
 }

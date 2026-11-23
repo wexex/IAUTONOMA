@@ -2,57 +2,57 @@
 # Modulo: escribir <ruta> [linea_ini] [linea_fin] '<texto>' y anadir <ruta> '<texto>' - Escribe, sobrescribe o anade texto en un fichero (usar comillas simples '')
 
 escribir() {
-    local ruta="$1"
+    ESC_RUTA="$1"
     shift
-    if [[ -n "$ruta" ]]; then
-        mkdir -p "$(dirname "$ruta")"
+    if [[ -n "$ESC_RUTA" ]]; then
+        mkdir -p "$(dirname "$ESC_RUTA")"
         if [[ $# -ge 2 ]]; then
             if [[ "$1" =~ ^[0-9]+$ ]]; then
-                if [[ -f "$ruta" ]]; then
-                    local ini="$1"
-                    local fin="$1"
+                if [[ -f "$ESC_RUTA" ]]; then
+                    ESC_INI="$1"
+                    ESC_FIN="$1"
                     shift
                     if [[ $# -ge 2 ]]; then
                         if [[ "$1" =~ ^[0-9]+$ ]]; then
-                            fin="$1"
+                            ESC_FIN="$1"
                             shift
                         fi
                     fi
-                    : > "$ruta.tmp"
-                    if [[ "$ini" -gt 1 ]]; then
-                        head -n "$((ini - 1))" "$ruta" >> "$ruta.tmp"
+                    : > "$ESC_RUTA.tmp"
+                    if [[ "$ESC_INI" -gt 1 ]]; then
+                        head -n "$((ESC_INI - 1))" "$ESC_RUTA" >> "$ESC_RUTA.tmp"
                     fi
-                    printf "%b\n" "$*" >> "$ruta.tmp"
-                    tail -n "+$((fin + 1))" "$ruta" >> "$ruta.tmp"
-                    mv "$ruta.tmp" "$ruta"
-                    echo "Escrito ($ini-$fin): $ruta"
+                    printf "%b\n" "$*" >> "$ESC_RUTA.tmp"
+                    tail -n "+$((ESC_FIN + 1))" "$ESC_RUTA" >> "$ESC_RUTA.tmp"
+                    mv "$ESC_RUTA.tmp" "$ESC_RUTA"
+                    echo "Escrito ($ESC_INI-$ESC_FIN): $ESC_RUTA"
                 else
-                    echo "Error: no existe $ruta"
-                    false
+                    echo "Error: no existe $ESC_RUTA"
+                    test 0 -eq 1
                 fi
             else
-                printf "%b\n" "$*" > "$ruta"
-                echo "Escrito: $ruta"
+                printf "%b\n" "$*" > "$ESC_RUTA"
+                echo "Escrito: $ESC_RUTA"
             fi
         else
-            printf "%b\n" "$*" > "$ruta"
-            echo "Escrito: $ruta"
+            printf "%b\n" "$*" > "$ESC_RUTA"
+            echo "Escrito: $ESC_RUTA"
         fi
     else
         echo "Error: falta ruta"
-        false
+        test 0 -eq 1
     fi
 }
 
 anadir() {
-    local ruta="$1"
+    AN_RUTA="$1"
     shift
-    if [[ -n "$ruta" ]]; then
-        mkdir -p "$(dirname "$ruta")"
-        printf "%b\n" "$*" >> "$ruta"
-        echo "Anadido: $ruta"
+    if [[ -n "$AN_RUTA" ]]; then
+        mkdir -p "$(dirname "$AN_RUTA")"
+        printf "%b\n" "$*" >> "$AN_RUTA"
+        echo "Anadido: $AN_RUTA"
     else
         echo "Error: falta ruta"
-        false
+        test 0 -eq 1
     fi
 }

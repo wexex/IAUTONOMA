@@ -2,20 +2,19 @@
 # Modulo: pegar_directorio [destino] - Pega en el destino la carpeta o directorio copiado previamente
 
 pegar_directorio() {
-    local clip="/tmp/.cerebro2_clip_directorio"
-    local dest="${1:-.}"
-    if [[ ! -f "$clip" ]]; then
+    PD_CLIP="/tmp/.cerebro2_clip_directorio"
+    PD_DEST="${1:-.}"
+    if [[ ! -f "$PD_CLIP" ]]; then
         echo "Error: no hay ningun directorio copiado en el portapapeles"
-        false
+        test 0 -eq 1
     else
-        local orig
-        orig=$(<"$clip")
-        if [[ -d "$orig" ]]; then
-            if cp -r "$orig" "$dest"; then echo "Directorio pegado: $orig -> $dest"
-            else false; fi
+        PD_ORIG=$(<"$PD_CLIP")
+        if [[ -d "$PD_ORIG" ]]; then
+            if cp -r "$PD_ORIG" "$PD_DEST"; then echo "Directorio pegado: $PD_ORIG -> $PD_DEST"
+            else test 0 -eq 1; fi
         else
-            echo "Error: ya no existe el directorio copiado ($orig)"
-            false
+            echo "Error: ya no existe el directorio copiado ($PD_ORIG)"
+            test 0 -eq 1
         fi
     fi
 }

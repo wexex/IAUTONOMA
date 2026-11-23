@@ -2,20 +2,19 @@
 # Modulo: pegar_fichero [destino] - Pega en el destino el fichero o archivo copiado previamente
 
 pegar_fichero() {
-    local clip="/tmp/.cerebro2_clip_fichero"
-    local dest="${1:-.}"
-    if [[ ! -f "$clip" ]]; then
+    PF_CLIP="/tmp/.cerebro2_clip_fichero"
+    PF_DEST="${1:-.}"
+    if [[ ! -f "$PF_CLIP" ]]; then
         echo "Error: no hay ningun fichero copiado en el portapapeles"
-        false
+        test 0 -eq 1
     else
-        local orig
-        orig=$(<"$clip")
-        if [[ -f "$orig" ]]; then
-            if cp "$orig" "$dest"; then echo "Fichero pegado: $orig -> $dest"
-            else false; fi
+        PF_ORIG=$(<"$PF_CLIP")
+        if [[ -f "$PF_ORIG" ]]; then
+            if cp "$PF_ORIG" "$PF_DEST"; then echo "Fichero pegado: $PF_ORIG -> $PF_DEST"
+            else test 0 -eq 1; fi
         else
-            echo "Error: ya no existe el fichero copiado ($orig)"
-            false
+            echo "Error: ya no existe el fichero copiado ($PF_ORIG)"
+            test 0 -eq 1
         fi
     fi
 }

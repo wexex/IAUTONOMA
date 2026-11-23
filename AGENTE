@@ -43,10 +43,11 @@ read -r NORM_DISPARO_HIP NORM_DISPARO_MEM NORM_DISPARO_PER < <(jq -r -n \
     ] | map(tostring) | join(" ")
 ')
 
-# Vectorizar consulta limpia (sin filtros fijos de longitud; respaldo vectorial por hipocampo si no dispara recuerdos)
+# Vectorizar consulta limpia (quitando prefijo de despertar [FECHA] <<...>> si existe; respaldo vectorial por hipocampo si no dispara recuerdos)
+ENTRADA_VEC=$(jq -r -n --arg t "$ENTRADA" '$t | sub("^\\[[^\\]]+\\] <<[^>]+>> *"; "")')
 VEC_CONSULTA="null"
-if [[ -n "$ENTRADA" ]]; then
-    PAYLOAD_EMB=$(jq -a -n --arg txt "$ENTRADA" '{input: $txt}')
+if [[ -n "$ENTRADA_VEC" ]]; then
+    PAYLOAD_EMB=$(jq -a -n --arg txt "$ENTRADA_VEC" '{input: $txt}')
     RESP_EMB=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAYLOAD_EMB")
     if [[ -z "$RESP_EMB" ]]; then RESP_EMB="{}"; fi
     VEC_CONSULTA=$(jq -c 'if .data then (.data[0].embedding | map((. * 10000 | round) / 10000)) else null end' < <(echo "$RESP_EMB"))
@@ -223,14 +224,15 @@ enrutar_loras() {
                     [ $eval[ ] | select(.es_cur and .sim >= $umb and .sim >= $maxm) ] | sort_by(-.sim)[:1] | map(.id)
                 end
             ) as $ganadores |
-            (if ($ganadores | length) > 0 then ($esc / ($ganadores | length)) else 0.0 end) as $esc_esp |
+            (if ($ganadores | length) > 0 then ($esc * 0.7) else $esc end) as $esc_base |
+            (if ($ganadores | length) > 0 then (($esc * 0.8) / ($ganadores | length)) else 0.0 end) as $esc_esp |
             [
                 $eval[ ] |
                 .id as $cur_id |
                 {
                     id: $cur_id,
                     prev: .prev,
-                    scale: (if .es_base then $esc elif (($ganadores | index($cur_id)) != null) then $esc_esp else 0.0 end)
+                    scale: (if .es_base then $esc_base elif (($ganadores | index($cur_id)) != null) then $esc_esp else 0.0 end)
                 }
             ] as $res |
             if ([ $res[ ] | select(((.scale - .prev) | fabs) > 0.001) ] | length) > 0 then
@@ -634,7 +636,6 @@ MENSAJES_TURNO=$(jq -a -n --arg ent "$ENTRADA" '[{"role": "user", "content": $en
 ETIQUETAS_TOOLS=""
 TEXTO_FINAL=""
 RESPONDI=0
-ULTIMA_LLAMADA_TOOL=""
 
 if [[ "${MODO_INTERNO:-0}" -eq 1 ]]; then
     INSTRUCCION_INTERNA='

@@ -2,19 +2,20 @@
 # Modulo: editar <ruta> <buscar> <reemplazar> - Modifica un fichero reemplazando un texto por otro
 
 editar() {
-    local ruta="$1" buscar="$2" reemplazar="$3"
-    if [[ -f "$ruta" ]]; then
-        local txt
-        txt=$(<"$ruta")
-        if [[ "$txt" == *"$buscar"* ]]; then
-            printf "%s\n" "${txt/"$buscar"/"$reemplazar"}" > "$ruta"
-            echo "Editado: $ruta"
+    ED_RUTA="$1"
+    ED_BUSCAR="$2"
+    ED_REEMP="$3"
+    if [[ -f "$ED_RUTA" ]]; then
+        ED_TXT=$(<"$ED_RUTA")
+        if [[ "$ED_TXT" == *"$ED_BUSCAR"* ]]; then
+            printf "%s\n" "${ED_TXT/"$ED_BUSCAR"/"$ED_REEMP"}" > "$ED_RUTA"
+            echo "Editado: $ED_RUTA"
         else
             echo "Error: texto no encontrado"
-            false
+            test 0 -eq 1
         fi
     else
-        echo "Error: no existe $ruta"
-        false
+        echo "Error: no existe $ED_RUTA"
+        test 0 -eq 1
     fi
 }

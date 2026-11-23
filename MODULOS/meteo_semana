@@ -2,36 +2,50 @@
 # Modulo: meteo_semana - Pronostico resumen de los proximos 7 dias
 
 meteo_semana() {
-    # 1. Obtener coordenadas (con respaldo por si falla la red)
     LAT=""
     LON=""
 
-    # 1. En Android Termux (GPS real del móvil en Bash)
-    if command -v termux-location &>/dev/null; then
-        LOC=$(termux-location -p network -r once 2>/dev/null || termux-location -p gps -r once 2>/dev/null)
-        LAT=$(echo "$LOC" | grep -o '"latitude": *[0-9.-]*' | head -n1 | cut -d: -f2 | tr -d ' ')
-        LON=$(echo "$LOC" | grep -o '"longitude": *[0-9.-]*' | head -n1 | cut -d: -f2 | tr -d ' ')
+    if command -v termux-location >/dev/null 2>/dev/null; then
+        LOC=$(termux-location -p network -r once 2>/dev/null)
+        if [[ -z "$LOC" ]]; then
+            LOC=$(termux-location -p gps -r once 2>/dev/null)
+        fi
+        if [[ -n "$LOC" ]]; then
+            read -r LAT LON < <(jq -r '[(.latitude // ""), (.longitude // "")] | join(" ")' < <(printf '%s' "$LOC") 2>/dev/null)
+        fi
     fi
 
-    # 2. En Windows PC (triangulación Wi-Fi real del sistema)
-    if [[ -z "$LAT" || -z "$LON" ]] && command -v powershell.exe &>/dev/null; then
-        LOC_WIN=$(powershell.exe -NoProfile -Command "Add-Type -AssemblyName System.Device; \$w = New-Object System.Device.Location.GeoCoordinateWatcher; \$w.Start(); Start-Sleep -Milliseconds 2500; \$loc = \$w.Position.Location; \$w.Stop(); if (!\$loc.IsUnknown) { Write-Output \"\$([Math]::Round(\$loc.Latitude, 4)), \$([Math]::Round(\$loc.Longitude, 4))\" }" 2>/dev/null)
-        LAT=$(echo "$LOC_WIN" | cut -d, -f1 | tr -d ' \r\n')
-        LON=$(echo "$LOC_WIN" | cut -d, -f2 | tr -d ' \r\n')
+    FALTA_COORD=0
+    if [[ -z "$LAT" ]]; then FALTA_COORD=1; fi
+    if [[ -z "$LON" ]]; then FALTA_COORD=1; fi
+    if [[ $FALTA_COORD -eq 1 ]]; then
+        if command -v powershell.exe >/dev/null 2>/dev/null; then
+            LOC_WIN=$(powershell.exe -NoProfile -Command "Add-Type -AssemblyName System.Device; \$w = New-Object System.Device.Location.GeoCoordinateWatcher; \$w.Start(); Start-Sleep -Milliseconds 2500; \$loc = \$w.Position.Location; \$w.Stop(); if (!\$loc.IsUnknown) { Write-Output \"\$([Math]::Round(\$loc.Latitude, 4)), \$([Math]::Round(\$loc.Longitude, 4))\" }" 2>/dev/null)
+            LOC_WIN="${LOC_WIN//[$' \r\n']/}"
+            if [[ "$LOC_WIN" == *,* ]]; then
+                LAT="${LOC_WIN%%,*}"
+                LON="${LOC_WIN#*,}"
+            fi
+        fi
     fi
 
-    # 3. Respaldo por IP si no hay sensor disponible
-    if [[ -z "$LAT" || -z "$LON" ]]; then
+    FALTA_COORD=0
+    if [[ -z "$LAT" ]]; then FALTA_COORD=1; fi
+    if [[ -z "$LON" ]]; then FALTA_COORD=1; fi
+    if [[ $FALTA_COORD -eq 1 ]]; then
         LOC_IP=$(curl -s -A "curl" --max-time 3 "https://ipinfo.io/loc" 2>/dev/null)
-        LAT=$(echo "${LOC_IP%,*}" | tr -d ' \r\n')
-        LON=$(echo "${LOC_IP#*,}" | tr -d ' \r\n')
+        LOC_IP="${LOC_IP//[$' \r\n']/}"
+        if [[ "$LOC_IP" == *,* ]]; then
+            LAT="${LOC_IP%%,*}"
+            LON="${LOC_IP#*,}"
+        fi
     fi
-    if [[ -z "$LAT" || -z "$LON" || ! "$LAT" =~ ^[0-9\.-]+$ ]]; then LAT="40.4168"; LON="-3.7038"; fi
+    if [[ ! "$LAT" =~ ^[0-9.-]+$ ]]; then LAT="40.4168"; LON="-3.7038"; fi
+    if [[ ! "$LON" =~ ^[0-9.-]+$ ]]; then LAT="40.4168"; LON="-3.7038"; fi
 
-    # 2. Diccionario de estados WMO nativo en Bash
-    declare -A WMO=(
+    WMO=(
         [0]="Soleado" [1]="Nublado-" [2]="Nublado+" [3]="Nublado"
-        [45]="Niebla-" [48]="Niebla" 
+        [45]="Niebla-" [48]="Niebla"
         [51]="Llovizna-" [53]="Llovizna+" [55]="Llovizna"
         [61]="Lluvia-" [63]="Lluvia+" [65]="Lluvia"
         [71]="Nieve-" [75]="Nieve"
@@ -41,17 +55,19 @@ meteo_semana() {
 
     API="https://api.open-meteo.com/v1/forecast"
     FIELDS="hourly=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation_probability,precipitation,wind_speed_10m,wind_gusts_10m,weather_code"
-    URL="${API}?latitude=${LAT}&longitude=${LON}&${FIELDS}&forecast_days=7&timezone=auto&format=csv"
 
-    # Obtener nombre del lugar a partir de las coordenadas
-    LUGAR=$(curl -s -A "curl" --max-time 3 "https://nominatim.openstreetmap.org/reverse?lat=${LAT}&lon=${LON}&format=json" 2>/dev/null | grep -oE '"(town|city|village|municipality)":"[^"]*"' | head -n1 | cut -d'"' -f4)
+    LUGAR_JSON=$(curl -sG -A "curl" --max-time 3 "https://nominatim.openstreetmap.org/reverse" -d "lat=${LAT}" -d "lon=${LON}" -d "format=json" 2>/dev/null)
+    LUGAR=""
+    if [[ -n "$LUGAR_JSON" ]]; then
+        LUGAR=$(jq -r '.address.town // .address.city // .address.village // .address.municipality // empty' < <(printf '%s' "$LUGAR_JSON") 2>/dev/null)
+    fi
 
     dias=("" "Lunes" "Martes" "Miércoles" "Jueves" "Viernes" "Sábado" "Domingo")
 
-    # 3. Procesar los 7 días
     echo "Pronóstico de 7 días (${LUGAR:+$LUGAR, }$LAT,$LON):"
     dia_actual=""
-    while IFS=',' read -r fecha_hora temp sens humedad probabilidad_lluvia cantidada_agua viento_10m racha_viento code || [[ -n "$fecha_hora" ]]; do
+    HORA_NOW="$(date +%H:00)"
+    while IFS=',' read -r fecha_hora temp sens humedad probabilidad_lluvia cantidada_agua viento_10m racha_viento code; do
         if [[ "$fecha_hora" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2})T([0-9]{2}:[0-9]{2}) ]]; then
             fecha="${BASH_REMATCH[1]}"
             hora="${BASH_REMATCH[2]}"
@@ -62,15 +78,13 @@ meteo_semana() {
                 echo ""
                 echo "${dia_nom:+$dia_nom, }${fecha}:"
             fi
-            code="${code//[$'\r\n']}"
-            desc="${WMO[$code]:-Variable}"
-
-            # Marca la hora actual
-            if [[ "$hora" == "$(date +%H:00)" ]]; then hora="[AHORA] ${hora}"; else hora="$hora"; fi
-
-            # Muestra la informacion en pantalla
-            echo "${hora} | ${temp}C (${sens}C), (Hum:${humedad}% Prob:${probabilidad_lluvia}% Lluvia:${cantidada_agua}mm) (Viento:${viento_10m}km/h Racha:${racha_viento}km/h), ${desc}"
+            code="${code//[$'\r\n']/}"
+            desc="Variable"
+            if [[ "$code" =~ ^[0-9]+$ ]]; then
+                if [[ -n "${WMO[$code]}" ]]; then desc="${WMO[$code]}"; fi
+            fi
+            if [[ "$hora" == "$HORA_NOW" ]]; then hora="[AHORA] ${hora}"; fi
+            echo "${hora} - ${temp}C (${sens}C), (Hum:${humedad}% Prob:${probabilidad_lluvia}% Lluvia:${cantidada_agua}mm) (Viento:${viento_10m}km/h Racha:${racha_viento}km/h), ${desc}"
         fi
-    done < <(curl -s --max-time 10 "$URL" 2>/dev/null)
-
+    done < <(curl -sG --max-time 10 "$API" -d "latitude=${LAT}" -d "longitude=${LON}" -d "$FIELDS" -d "forecast_days=7" -d "timezone=auto" -d "format=csv" 2>/dev/null; printf '\n')
 }

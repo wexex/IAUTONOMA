@@ -4,9 +4,9 @@
 renombrar() {
     if [[ -e "$1" ]]; then
         if mv "$1" "$2"; then echo "Renombrado: $1 -> $2"
-        else false; fi
+        else test 0 -eq 1; fi
     else
         echo "Error: no existe $1"
-        false
+        test 0 -eq 1
     fi
 }

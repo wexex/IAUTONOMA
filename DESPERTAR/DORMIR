@@ -910,11 +910,13 @@ fase_rem() {
 
         cd "$DIR"
         REL_CAND="MEMORIA/SUENO/${NOM_T}/candidato.gguf"
-        LORAS_REM="${REL_CAND}:${LORA_ESCALA:-0.80}"
+        ESC_REM="${LORA_ESCALA:-0.70}"
+        LORAS_REM="${REL_CAND}:${ESC_REM}"
         if [[ -n "$LORA_BASE" ]]; then
             if [[ "$NOM_T" != "$LORA_BASE" ]]; then
                 if [[ -s "LORA/${LORA_BASE}.gguf" ]]; then
-                    LORAS_REM="LORA/${LORA_BASE}.gguf:${LORA_ESCALA:-0.80},${REL_CAND}:${LORA_ESCALA:-0.80}"
+                    read -r ESC_REM_BASE ESC_REM_CAND < <(awk -v e="$ESC_REM" 'BEGIN { printf "%.4f %.4f\n", e * 0.7, e * 0.8 }')
+                    LORAS_REM="LORA/${LORA_BASE}.gguf:${ESC_REM_BASE},${REL_CAND}:${ESC_REM_CAND}"
                 fi
             fi
         fi

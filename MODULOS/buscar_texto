@@ -6,6 +6,6 @@ buscar_texto() {
         grep -rn -m 20 "$1" "${2:-.}"
     else
         echo "Error: falta texto a buscar"
-        false
+        test 0 -eq 1
     fi
 }
