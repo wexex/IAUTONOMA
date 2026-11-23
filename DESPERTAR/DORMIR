@@ -812,9 +812,21 @@ poblar_sandbox_recuerdo() {
                 fi
             fi
         done < <(printf '%s\n' "$OUT_REC")
+    elif [[ "$MOD_REC" == "buscar_texto" ]]; then
+        ARG2_REC="${REST_REC#"$ARG_REC"}"
+        ARG2_REC="${ARG2_REC# }"
+        ARG2_REL="${ARG2_REC#/}"
+        if [[ -n "$ARG2_REL" ]]; then
+            if [[ "$ARG2_REL" != *".."* ]]; then
+                mkdir -p "$DIR_SANDBOX_SUENO/$(dirname "$ARG2_REL")" 2>/dev/null
+                if [[ "$OUT_REC" != Error:* ]]; then
+                    printf '%s\n' "$OUT_REC" > "$DIR_SANDBOX_SUENO/$ARG2_REL" 2>/dev/null
+                fi
+            fi
+        fi
     else
-        case "$MOD_REC" in
-            identificar|escribir|anadir|editar)
+        for m_rec_ok in identificar escribir anadir editar; do
+            if [[ "$MOD_REC" == "$m_rec_ok" ]]; then
                 if [[ -n "$ARG_REL" ]]; then
                     if [[ "$ARG_REL" != *".."* ]]; then
                         if [[ "$OUT_REC" != Error:* ]]; then
@@ -825,21 +837,9 @@ poblar_sandbox_recuerdo() {
                         fi
                     fi
                 fi
-                ;;
-            buscar_texto)
-                ARG2_REC="${REST_REC#"$ARG_REC"}"
-                ARG2_REC="${ARG2_REC# }"
-                ARG2_REL="${ARG2_REC#/}"
-                if [[ -n "$ARG2_REL" ]]; then
-                    if [[ "$ARG2_REL" != *".."* ]]; then
-                        mkdir -p "$DIR_SANDBOX_SUENO/$(dirname "$ARG2_REL")" 2>/dev/null
-                        if [[ "$OUT_REC" != Error:* ]]; then
-                            printf '%s\n' "$OUT_REC" > "$DIR_SANDBOX_SUENO/$ARG2_REL" 2>/dev/null
-                        fi
-                    fi
-                fi
-                ;;
-        esac
+                break
+            fi
+        done
     fi
 }
 
@@ -858,34 +858,36 @@ ejecutar_en_sandbox_sueno() {
 
     if grep -qE '(\.\.|(^|[[:space:]])/|[A-Za-z]:\\|~|\brm\b|\bmkfs\b|\bdd\b|\bchmod\b|\bshutdown\b|\breboot\b|\bpoweroff\b|\bsubir_github\b|&|;|\|)' < <(printf '%s' "$CMD_SB"); then
         echo "Error: fuera de los limites del sandbox SUENO ($CMD_SB)"
+    elif [[ "$MOD_SB" == "ruta" ]]; then
+        if [[ -n "$OUT_REC" ]]; then
+            if [[ "$MOD_REC" == "ruta" ]]; then
+                printf '%s\n' "$OUT_REC"
+            else
+                echo "La ruta es: /SUENO"
+            fi
+        else
+            echo "La ruta es: /SUENO"
+        fi
     else
-        case "$MOD_SB" in
-            hora|fecha|maquina|buscar_internet|meteo_*)
-                if [[ "$MOD_SB" == "$MOD_REC" ]]; then
-                    if [[ -n "$OUT_REC" ]]; then
-                        printf '%s\n' "$OUT_REC"
-                    else
-                        echo "(sin datos de $MOD_SB en este recuerdo)"
-                    fi
+        ES_MEM_SB=0
+        for m_mem_sb in hora fecha maquina buscar_internet; do
+            if [[ "$MOD_SB" == "$m_mem_sb" ]]; then ES_MEM_SB=1; fi
+        done
+        if [[ "$MOD_SB" == meteo_* ]]; then ES_MEM_SB=1; fi
+
+        if [[ $ES_MEM_SB -eq 1 ]]; then
+            if [[ "$MOD_SB" == "$MOD_REC" ]]; then
+                if [[ -n "$OUT_REC" ]]; then
+                    printf '%s\n' "$OUT_REC"
                 else
                     echo "(sin datos de $MOD_SB en este recuerdo)"
                 fi
-                ;;
-            ruta)
-                if [[ -n "$OUT_REC" ]]; then
-                    if [[ "$MOD_REC" == "ruta" ]]; then
-                        printf '%s\n' "$OUT_REC"
-                    else
-                        echo "La ruta es: /SUENO"
-                    fi
-                else
-                    echo "La ruta es: /SUENO"
-                fi
-                ;;
-            *)
-                head -c 4000 < <(timeout "$TIMEOUT_HERRAMIENTA" bash -c 'cd "$1" && for f in "$2"/*; do if [[ -f "$f" ]]; then source "$f"; fi; done; eval "$3"' _ "$DIR_SANDBOX_SUENO" "$DIR_MODULOS" "$CMD_SB" 2>/dev/null)
-                ;;
-        esac
+            else
+                echo "(sin datos de $MOD_SB en este recuerdo)"
+            fi
+        else
+            head -c 4000 < <(timeout "$TIMEOUT_HERRAMIENTA" bash -c 'cd "$1" && for f in "$2"/*; do if [[ -f "$f" ]]; then source "$f"; fi; done; eval "$3"' _ "$DIR_SANDBOX_SUENO" "$DIR_MODULOS" "$CMD_SB" 2>/dev/null)
+        fi
     fi
 }
 
