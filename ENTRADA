@@ -6,77 +6,163 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)/CONFIG"
 FECHA_HORA=$(date "+%Y-%m-%d %H:%M:%S")
 
 # Argumentos recibidos:
+MODO_CONSOLIDAR=0
+ARCH_TURNO_CONSOLIDAR=""
+ARCH_TRAZA_CONSOLIDAR=""
 MODO_INTERNO=0
-if [[ "$1" == "--interno" ]]; then MODO_INTERNO=1; shift; fi
+if [[ "$1" == "--consolidar" ]]; then
+    MODO_CONSOLIDAR=1
+    ARCH_TURNO_CONSOLIDAR="$2"
+    ARCH_TRAZA_CONSOLIDAR="$3"
+elif [[ "$1" == "--interno" ]]; then
+    MODO_INTERNO=1
+    shift
+fi
 export MODO_INTERNO
 
-# Cargar entrada
-ENTRADA="$*"
-
-# Si no hay entrada, salir
-if [[ -z "$ENTRADA" ]]; then exit 0; fi
-
-# Despertar automatico y reinicio del contador de vigilia (solo en interacciones normales)
-if [[ $MODO_INTERNO -eq 0 ]]; then
+if [[ $MODO_CONSOLIDAR -eq 1 ]]; then
+    if [[ ! -s "$ARCH_TURNO_CONSOLIDAR" ]]; then
+        rm -f "$ARCH_TRAZA_CONSOLIDAR" 2>/dev/null
+        exit 0
+    fi
     mkdir -p "$DIR_REGISTROS"
-    date +%s > "$ULTIMA_INTERACCION"
-    ACABA_DE_DESPERTAR=0
+    ESPERA_C=0
+    while [[ $ESPERA_C -lt 100 ]]; do
+        if [[ ! -s "$LOCK_MEMORIA" ]]; then break; fi
+        LPID_C=$(cat "$LOCK_MEMORIA" 2>/dev/null)
+        if [[ -z "$LPID_C" ]]; then break; fi
+        if ! kill -0 "$LPID_C" 2>/dev/null; then
+            rm -f "$LOCK_MEMORIA" 2>/dev/null
+            break
+        fi
+        sleep 0.1
+        ESPERA_C=$((ESPERA_C + 1))
+    done
+    echo "$$" > "$LOCK_MEMORIA"
+    trap 'rm -f "$LOCK_MEMORIA" "$ARCH_TURNO_CONSOLIDAR" "$ARCH_TRAZA_CONSOLIDAR"' EXIT
+    {
+        IFS= read -r FECHA_HORA
+        IFS= read -r ENTRADA_UNA_LINEA
+        IFS= read -r RESPUESTA_UNA_LINEA
+    } < "$ARCH_TURNO_CONSOLIDAR"
+else
+    # Cargar entrada
+    ENTRADA="$*"
 
-    if ! curl -sf "http://${HOST}:${PUERTO}/health" >/dev/null 2>/dev/null; then
-        ACABA_DE_DESPERTAR=1
-        echo "..."
-        true < <(setsid "$DIR/DESPERTAR/LENGUAJE" </dev/null >/dev/null 2>/dev/null)
-        INTENTO=0
-        while [[ $INTENTO -lt 120 ]]; do
-            sleep 0.5
-            if curl -sf "http://${HOST}:${PUERTO}/health" >/dev/null 2>/dev/null; then break; fi
-            INTENTO=$((INTENTO + 1))
-        done
-    fi
+    # Si no hay entrada, salir
+    if [[ -z "$ENTRADA" ]]; then exit 0; fi
 
-    if ! curl -sf "http://${HOST}:${PUERTO_MEMORIA}/health" >/dev/null 2>/dev/null; then
-        echo "..."
-        true < <(setsid "$DIR/DESPERTAR/MEMORIA" </dev/null >/dev/null 2>/dev/null)
-        INTENTO=0
-        while [[ $INTENTO -lt 120 ]]; do
-            sleep 0.5
-            if curl -sf "http://${HOST}:${PUERTO_MEMORIA}/health" >/dev/null 2>/dev/null; then break; fi
-            INTENTO=$((INTENTO + 1))
-        done
-    fi
+    # Despertar automatico y reinicio del contador de vigilia (solo en interacciones normales)
+    if [[ $MODO_INTERNO -eq 0 ]]; then
+        mkdir -p "$DIR_REGISTROS"
+        date +%s > "$ULTIMA_INTERACCION"
+        ACABA_DE_DESPERTAR=0
 
-    ABURRIMIENTO_VIVO=0
-    if [[ -s "$PID_ABURRIMIENTO" ]]; then
-        APID=$(cat "$PID_ABURRIMIENTO" 2>/dev/null)
-        if [[ -n "$APID" ]]; then
-            if kill -0 "$APID" 2>/dev/null; then
-                ABURRIMIENTO_VIVO=1
+        # Si el agente esta durmiendo (entrenamiento/REM), avisar despertar y esperar pausa limpia con checkpoint
+        if [[ -s "$PID_DORMIR" ]]; then
+            DPID=$(cat "$PID_DORMIR" 2>/dev/null)
+            DORMIR_ACTIVO=0
+            if [[ -n "$DPID" ]]; then
+                if kill -0 "$DPID" 2>/dev/null; then
+                    DORMIR_ACTIVO=1
+                    echo "..."
+                    date +%s > "$SENAL_DESPERTAR"
+                    ESPERA_D=0
+                    while [[ $ESPERA_D -lt 250 ]]; do
+                        if ! kill -0 "$DPID" 2>/dev/null; then
+                            DORMIR_ACTIVO=0
+                            break
+                        fi
+                        if [[ $ESPERA_D -eq 200 ]]; then
+                            kill -TERM "$DPID" 2>/dev/null
+                        fi
+                        sleep 0.2
+                        ESPERA_D=$((ESPERA_D + 1))
+                    done
+                fi
+            fi
+            if [[ $DORMIR_ACTIVO -eq 0 ]]; then
+                rm -f "$PID_DORMIR" "$SENAL_DESPERTAR" 2>/dev/null
+            fi
+        elif [[ -f "$SENAL_DESPERTAR" ]]; then
+            rm -f "$SENAL_DESPERTAR" 2>/dev/null
+        fi
+
+        if ! curl -sf "http://${HOST}:${PUERTO}/health" >/dev/null 2>/dev/null; then
+            ACABA_DE_DESPERTAR=1
+            echo "..."
+            true < <(setsid "$DIR/DESPERTAR/LENGUAJE" </dev/null >/dev/null 2>/dev/null)
+            INTENTO=0
+            while [[ $INTENTO -lt 120 ]]; do
+                sleep 0.5
+                if curl -sf "http://${HOST}:${PUERTO}/health" >/dev/null 2>/dev/null; then break; fi
+                INTENTO=$((INTENTO + 1))
+            done
+        fi
+
+        if ! curl -sf "http://${HOST}:${PUERTO_MEMORIA}/health" >/dev/null 2>/dev/null; then
+            echo "..."
+            true < <(setsid "$DIR/DESPERTAR/MEMORIA" </dev/null >/dev/null 2>/dev/null)
+            INTENTO=0
+            while [[ $INTENTO -lt 120 ]]; do
+                sleep 0.5
+                if curl -sf "http://${HOST}:${PUERTO_MEMORIA}/health" >/dev/null 2>/dev/null; then break; fi
+                INTENTO=$((INTENTO + 1))
+            done
+        fi
+
+        ABURRIMIENTO_VIVO=0
+        if [[ -s "$PID_ABURRIMIENTO" ]]; then
+            APID=$(cat "$PID_ABURRIMIENTO" 2>/dev/null)
+            if [[ -n "$APID" ]]; then
+                if kill -0 "$APID" 2>/dev/null; then
+                    ABURRIMIENTO_VIVO=1
+                fi
             fi
         fi
-    fi
-    if [[ $ABURRIMIENTO_VIVO -eq 0 ]]; then
-        true < <(setsid "$DIR/DESPERTAR/ABURRIMIENTO" </dev/null >/dev/null 2>/dev/null)
+        if [[ $ABURRIMIENTO_VIVO -eq 0 ]]; then
+            true < <(setsid "$DIR/DESPERTAR/ABURRIMIENTO" </dev/null >/dev/null 2>/dev/null)
+        fi
+
+        if [[ $ACABA_DE_DESPERTAR -eq 1 ]]; then
+            ENTRADA="[$FECHA_HORA] $ESTIMULO_DESPERTAR $ENTRADA"
+        fi
+    else
+        if ! curl -sf "http://${HOST}:${PUERTO}/health" >/dev/null 2>/dev/null; then
+            exit 0
+        fi
     fi
 
-    if [[ $ACABA_DE_DESPERTAR -eq 1 ]]; then
-        ENTRADA="[$FECHA_HORA] $ESTIMULO_DESPERTAR $ENTRADA"
+    ARCH_TRAZA_TOOL=""
+    if [[ $MODO_INTERNO -eq 0 ]]; then
+        ARCH_TRAZA_TOOL="$DIR_REGISTROS/.traza_tool.$$.json"
+        rm -f "$ARCH_TRAZA_TOOL" 2>/dev/null
+        export ARCH_TRAZA_TOOL
     fi
-else
-    if ! curl -sf "http://${HOST}:${PUERTO}/health" >/dev/null 2>/dev/null; then
+
+    RESPUESTA=$("$DIR/AGENTE" "$ENTRADA")
+    if [[ $MODO_INTERNO -eq 0 ]]; then
+        date +%s > "$ULTIMA_INTERACCION"
+        echo "$RESPUESTA"
+    fi
+
+    ENTRADA_UNA_LINEA="${ENTRADA//$'\r'/ }";     ENTRADA_UNA_LINEA="${ENTRADA_UNA_LINEA//$'\n'/ }"
+    RESPUESTA_UNA_LINEA="${RESPUESTA//$'\r'/ }"; RESPUESTA_UNA_LINEA="${RESPUESTA_UNA_LINEA//$'\n'/ }"
+
+    LINEA_LOG="Peticion: $SEP_USUARIO $ENTRADA_UNA_LINEA | Respuesta: $SEP_IA $RESPUESTA_UNA_LINEA"
+    echo "$LINEA_LOG" >> "$HISTORIAL"
+
+    if [[ $MODO_INTERNO -eq 0 ]]; then
+        if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
+            ARCH_TURNO_TMP="$DIR_REGISTROS/.turno.$$.tmp"
+            printf '%s\n%s\n%s\n' "$FECHA_HORA" "$ENTRADA_UNA_LINEA" "$RESPUESTA_UNA_LINEA" > "$ARCH_TURNO_TMP"
+            true < <(setsid "$DIR/ENTRADA" --consolidar "$ARCH_TURNO_TMP" "$ARCH_TRAZA_TOOL" </dev/null >/dev/null 2>/dev/null)
+        else
+            rm -f "$ARCH_TRAZA_TOOL" 2>/dev/null
+        fi
         exit 0
     fi
 fi
-
-RESPUESTA=$("$DIR/AGENTE" "$ENTRADA")
-if [[ $MODO_INTERNO -eq 0 ]]; then
-    date +%s > "$ULTIMA_INTERACCION"
-    echo "$RESPUESTA"
-fi
-
-ENTRADA_UNA_LINEA="${ENTRADA//$'\r'/ }";     ENTRADA_UNA_LINEA="${ENTRADA_UNA_LINEA//$'\n'/ }"
-RESPUESTA_UNA_LINEA="${RESPUESTA//$'\r'/ }"; RESPUESTA_UNA_LINEA="${RESPUESTA_UNA_LINEA//$'\n'/ }"
-
-LINEA_LOG="Peticion: $SEP_USUARIO $ENTRADA_UNA_LINEA | Respuesta: $SEP_IA $RESPUESTA_UNA_LINEA"
 
 # Funcion compartida: enruta un turno a su particion, reconsolida/refuerza (LTP) o atenua por divergencia (LTD) y actualiza el indice
 guardar_en_capa() {
@@ -546,7 +632,144 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
             fi
         fi
     fi
-fi
 
-# Historial completo
-echo "$LINEA_LOG" >> "$HISTORIAL"
+    # 4. Capa procedimental (trazas reales completas de herramientas: usar + leer, solo para entrenamiento en sueno)
+    if [[ -n "$ARCH_TRAZA_CONSOLIDAR" ]]; then
+        if [[ -s "$ARCH_TRAZA_CONSOLIDAR" ]]; then
+            if [[ ! -f "$INDICE_PROCEDIMENTAL" ]]; then > "$INDICE_PROCEDIMENTAL"; fi
+            LINEA_PROC=$(jq -a -c -s --arg f "$FECHA_HORA" '
+                def norm($v): ((reduce $v[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                (.[0]) as $resp |
+                (.[1]) as $msgs |
+                if ($msgs | type) == "array" and ($msgs | length) >= 4 then
+                    {
+                        fecha: $f,
+                        tipo: "procedimental",
+                        messages: $msgs,
+                        embedding: (
+                            if ($resp.data and ($resp.data | length) > 0) then
+                                ($resp.data[0].embedding) as $v |
+                                (norm($v)) as $n |
+                                ($v | map(((. / $n) * 10000 | round) / 10000))
+                            else
+                                null
+                            end
+                        ),
+                        emb_u: (if ($resp.data and ($resp.data | length) > 1) then ($resp.data[1].embedding | map((. * 10000 | round) / 10000)) else null end),
+                        emb_a: (if ($resp.data and ($resp.data | length) > 2) then ($resp.data[2].embedding | map((. * 10000 | round) / 10000)) else null end)
+                    }
+                else
+                    empty
+                end
+            ' < <(printf '%s\n' "$RESP_MEM"; cat "$ARCH_TRAZA_CONSOLIDAR") 2>/dev/null)
+
+            if [[ -n "$LINEA_PROC" ]]; then
+                PART_PROC=$(jq -r -s --argjson umb "$UMBRAL_SIM" --argjson maxp "$MAX_PARTICION" '
+                    def norm($v): ((reduce $v[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                    def dot($a; $b): reduce range(0; ($a | length)) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                    (.[0:-1]) as $idx |
+                    (.[-1]) as $nuevo |
+                    if $nuevo.embedding != null then
+                        (norm($nuevo.embedding)) as $nq |
+                        [
+                            $idx[ ] |
+                            select((.lineas // 0) < $maxp and .embedding != null and ((.embedding | length) == ($nuevo.embedding | length))) |
+                            (norm(.embedding)) as $ne |
+                            . + {_sim: (dot(.embedding; $nuevo.embedding) / ($ne * $nq))} |
+                            select(._sim >= $umb)
+                        ] | sort_by(-._sim) | .[0].archivo // empty
+                    else
+                        ($idx | map(select(.ultimo == 1 and (.lineas // 0) < $maxp)) | .[0].archivo // empty)
+                    end
+                ' < <(cat "$INDICE_PROCEDIMENTAL"; printf '%s\n' "$LINEA_PROC") 2>/dev/null)
+
+                if [[ -n "$PART_PROC" ]]; then
+                    if [[ -s "$DIR_MEMORIA/$PART_PROC" ]]; then
+                        PROC_ACT=$(jq -a -c -s --argjson uref "$UMBRAL_REFUERZO" '
+                            def norm($v): ((reduce $v[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                            def dot($a; $b): reduce range(0; ($a | length)) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                            (.[0:-1]) as $items |
+                            (.[-1]) as $nuevo |
+                            if $nuevo.emb_u == null then
+                                ($items + [$nuevo])[ ]
+                            else
+                                (norm($nuevo.emb_u)) as $nu |
+                                (
+                                    [
+                                        $items[ ] |
+                                        select(
+                                            type != "object" or
+                                            .emb_u == null or
+                                            ((.emb_u | length) != ($nuevo.emb_u | length)) or
+                                            ((dot(.emb_u; $nuevo.emb_u) / (norm(.emb_u) * $nu)) < $uref)
+                                        )
+                                    ] + [$nuevo]
+                                )[ ]
+                            end
+                        ' < <(cat "$DIR_MEMORIA/$PART_PROC"; printf '%s\n' "$LINEA_PROC") 2>/dev/null)
+                        if [[ -n "$PROC_ACT" ]]; then
+                            printf '%s\n' "$PROC_ACT" > "$DIR_MEMORIA/${PART_PROC}.$$.tmp"
+                            mv -f "$DIR_MEMORIA/${PART_PROC}.$$.tmp" "$DIR_MEMORIA/$PART_PROC"
+                        fi
+                    else
+                        printf '%s\n' "$LINEA_PROC" > "$DIR_MEMORIA/$PART_PROC"
+                    fi
+                else
+                    N_PR=1
+                    while [[ -f "$DIR_MEMORIA/${PREFIJO_PROCEDIMENTAL}_${N_PR}.json" ]]; do
+                        N_PR=$((N_PR + 1))
+                    done
+                    PART_PROC="${PREFIJO_PROCEDIMENTAL}_${N_PR}.json"
+                    printf '%s\n' "$LINEA_PROC" > "$DIR_MEMORIA/$PART_PROC"
+                fi
+
+                LIN_PROC=$(( $(wc -l < "$DIR_MEMORIA/$PART_PROC") ))
+                IND_PROC_NUEVO=$(jq -a -c -s --arg arch "$PART_PROC" --argjson lreal "$LIN_PROC" '
+                    def norm($v): ((reduce $v[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                    (.[0:-1]) as $idx |
+                    (.[-1]) as $nuevo |
+                    ($nuevo.embedding) as $v_unit |
+                    if ([ $idx[ ] | select(.archivo == $arch) ] | length) > 0 then
+                        [
+                            $idx[ ] |
+                            if .archivo == $arch then
+                                (.lineas // 1) as $n |
+                                . + {
+                                    lineas: $lreal,
+                                    ultimo: 1,
+                                    embedding: (
+                                        if ($v_unit != null and .embedding != null and ((.embedding | length) == ($v_unit | length))) then
+                                            (.embedding) as $old |
+                                            ($old | length) as $dim |
+                                            (reduce range(0; $dim) as $i ([ ]; . + [((($old[$i] // 0) * $n) + ($v_unit[$i] // 0)) / ($n + 1)])) as $raw_c |
+                                            (norm($raw_c)) as $nc |
+                                            ($raw_c | map(((. / $nc) * 10000 | round) / 10000))
+                                        else
+                                            (.embedding // $v_unit)
+                                        end
+                                    )
+                                }
+                            else
+                                . + {ultimo: 0}
+                            end
+                        ][ ]
+                    else
+                        (
+                            [ $idx[ ] | . + {ultimo: 0} ] +
+                            [{
+                                archivo: $arch,
+                                lineas: $lreal,
+                                ultimo: 1,
+                                embedding: $v_unit
+                            }]
+                        )[ ]
+                    end
+                ' < <(cat "$INDICE_PROCEDIMENTAL"; printf '%s\n' "$LINEA_PROC") 2>/dev/null)
+                if [[ -n "$IND_PROC_NUEVO" ]]; then
+                    printf '%s\n' "$IND_PROC_NUEVO" > "${INDICE_PROCEDIMENTAL}.$$.tmp"
+                    mv -f "${INDICE_PROCEDIMENTAL}.$$.tmp" "$INDICE_PROCEDIMENTAL"
+                fi
+            fi
+        fi
+    fi
+fi

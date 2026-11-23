@@ -12,9 +12,9 @@ fi
 cd "$DIR"
 
 ARGS_LORA=( )
-if [[ -d "$DIR_LORA" ]]; then
+if [[ -d "$DIR_LORA_PESOS" ]]; then
     LISTA_LORAS=""
-    for fl in LORA/*.gguf; do
+    for fl in "LORA"/*.gguf; do
         if [[ -s "$fl" ]]; then
             NOM_L="$(basename "$fl" .gguf)"
             ESC_L="0.0"

@@ -15,7 +15,7 @@ HOST="localhost"
 PUERTO="8081"
 URL="http://${HOST}:${PUERTO}/v1/chat/completions"
 TEMPERATURA="0.001"
-PENALIZACION_REPETICION="1.08"
+PENALIZACION_REPETICION="1.05"
 
 # Memoria
 PUERTO_MEMORIA="8082"
@@ -40,6 +40,7 @@ DECAIMIENTO_CASTIGO="1"
 DECAIMIENTO_PERSISTENTE="24*365"
 DECAIMIENTO_MEMORIA="24*7"
 DECAIMIENTO_HIPOCAMPO="24"
+INTERVALO_OLVIDO="15"
 
 # Informacion del estado actual de la memoria
 VISOR_HIPOCAMPO="5"
@@ -50,17 +51,18 @@ VISOR_OLVIDADOS="8"
 # Directorios
 DIR_HERRAMIENTAS="$DIR/HERRAMIENTAS"
 DIR_MODULOS="$DIR/MODULOS"
-DIR_SKILLS="$DIR/SKILLS"
 DIR_MEMORIA="$DIR/MEMORIA"
 DIR_REGISTROS="$DIR/REGISTROS"
 
-# Hipocampo (momento presente), Memoria episodica (1 semana) y Memoria persistente (1 anio)
+# Hipocampo (momento presente), Memoria episodica (1 semana), Persistente (1 anio) y Procedimental (herramientas para sueno)
 HIPOCAMPO="$DIR_MEMORIA/hipocampo.json"
-MAX_HIPOCAMPO="5"
+MAX_HIPOCAMPO="3"
 INDICE_EPISODICA="$DIR_MEMORIA/indice_episodica.json"
 PREFIJO_EPISODICA="episodica"
 INDICE_PERSISTENTE="$DIR_MEMORIA/indice_persistente.json"
 PREFIJO_PERSISTENTE="persistente"
+INDICE_PROCEDIMENTAL="$DIR_MEMORIA/indice_procedimental.json"
+PREFIJO_PROCEDIMENTAL="procedimental"
 MAX_PARTICION="100"
 MAX_MEMORIA="2"
 MAX_MEM_HERRAMIENTA="1"
@@ -68,17 +70,23 @@ MAX_MEM_HERRAMIENTA="1"
 # Memoria de modulos (enrutador escalable)
 DIR_MEM_MODULOS="$DIR_MEMORIA/MODULOS"
 INDICE_MODULOS="$DIR_MEM_MODULOS/indice.json"
-MAX_MODULOS="30"
+MAX_MODULOS="8"
 TIMEOUT_HERRAMIENTA="20"
 MAX_REINTENTOS="5"
 
+# Extrae el nombre limpio del modelo (sin ruta, cuantizacion -Q* ni .gguf) para mostrarlo en CHAT y aislar sus pesos LoRA
+NOMBRE_IA="$(basename "$MODELO" .gguf)"
+NOMBRE_IA="${NOMBRE_IA%%-Q*}"
+
 # Adaptadores LoRA locales por demanda
 DIR_LORA="$DIR/LORA"
+DIR_LORA_PESOS="$DIR_LORA"
 DIR_LORA_DATASETS="$DIR_LORA/DATASETS"
+INDICE_LORA_DATASETS="$DIR_LORA_DATASETS/indice.json"
 DIR_MEM_LORA="$DIR_MEMORIA/LORA"
 INDICE_LORA="$DIR_MEM_LORA/indice.json"
 DIR_ENTRENAMIENTO="$DIR/../MODELO/ENTRENAMIENTO"
-MODELO_BASE_HF="Qwen/Qwen3.5-2B"
+MODELO_BASE_HF="Qwen/$NOMBRE_IA"
 LORA_BASE="criterio_iautonoma"
 LORA_ESCALA="0.80"
 MAX_LORAS_ACTIVOS="2"
@@ -88,6 +96,7 @@ URL_LORA="http://${HOST}:${PUERTO}/lora-adapters"
 # Historial de todas las interacciones
 HISTORIAL="$DIR_REGISTROS/historial.log"
 LOG_SERVER="$DIR_REGISTROS/server.log"
+LOCK_MEMORIA="$DIR_REGISTROS/consolidando.lock"
 
 # Aburrimiento (despertar automatico y tiempo despierto en segundos)
 TIEMPO_DESPIERTO="5*60"
@@ -97,9 +106,20 @@ ESTIMULO_DESPERTAR="<<Te despiertas>>"
 ESTIMULO_SILENCIO="<<Todo esta en silencio>>"
 ESTIMULO_DORMIR="<<Te duermes>>"
 
-# Extrae el nombre limpio del modelo (sin ruta, cuantizacion -Q* ni .gguf) para mostrarlo en CHAT
-NOMBRE_IA="$(basename "$MODELO" .gguf)"
-NOMBRE_IA="${NOMBRE_IA%%-Q*}"
+# Mecanismo de sueno (Ligero -> Profundo -> REM con consolidacion pausable en LoRA)
+DIR_SUENO="$DIR_MEMORIA/SUENO"
+PID_DORMIR="$DIR_REGISTROS/dormir.pid"
+SENAL_DESPERTAR="$DIR_REGISTROS/despertar.senal"
+LOG_SUENO="$DIR_REGISTROS/sueno.log"
+MIN_RECUERDOS_SUENO="3"
+MAX_EJEMPLOS_LORA="10"
+MAX_CICLOS_REM="4"
+PASOS_OBJ_SUENO="16"
+CAPA_INICIO_SUENO="18"
+RANGO_LORA_SUENO="4"
+ALFA_LORA_SUENO="16"
+LR_SUENO="0.0005"
+GRAD_ACCUM_SUENO="2"
 
 # Nombre del Usuario
 NOMBRE_USUARIO="$(whoami)"

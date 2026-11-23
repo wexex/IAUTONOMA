@@ -43,7 +43,7 @@ Sus capacidades principales incluyen:
 * **Memoria jerárquica en tres capas temporales más índice procedimental:** hipocampo de corto plazo, memoria episódica particionada y memoria persistente con promoción automática y olvido exponencial en tiempo real.
 * **Reconsolidación y plasticidad vectorial (LTP / LTD):** evolución de la dirección vectorial y refuerzo sináptico ante confirmaciones (`sim >= 0.80`), junto con atenuación gradual de recuerdos desplazados por divergencia (`0.45 <= sim < 0.80`) sin listas de palabras fijas.
 * **Enrutamiento vectorial escalable de módulos y adaptadores LoRA:** indexación incremental con verificación por `cksum`, selección Top-K de herramientas y conmutación dinámica por demanda de adaptadores LoRA locales vía `POST /lora-adapters` (`llama-server`).
-* **Gestión autónoma de recursos:** arranque bajo demanda de los servidores de lenguaje y embeddings, percepción temporal de inactividad y suspensión automática con liberación de memoria GPU/RAM.
+* **Gestión autónoma de recursos y consolidación durante el sueño (`DESPERTAR/DORMIR`):** arranque bajo demanda de los servidores de lenguaje y embeddings, percepción temporal de inactividad, suspensión automática con liberación de GPU/RAM y consolidación pausable de la memoria persistente en adaptadores LoRA particionados en 3 fases (Ligero, Profundo y REM con parálisis motora y examen semántico).
 
 ---
 
@@ -66,19 +66,25 @@ flowchart TD
         L["LENGUAJE :8081<br/>llama-server Chat (GPU)"]
         M["MEMORIA :8082<br/>llama-server Embeddings (CPU)"]
         AB["ABURRIMIENTO<br/>Monitor de inactividad y sueño"]
+        DO["DORMIR<br/>Ligero -> Profundo (LoRA) -> REM"]
         OL["OLVIDO<br/>Decaimiento exponencial + Monitor TUI"]
     end
 
     E -->|"Arranque bajo demanda"| L
     E -->|"Arranque bajo demanda"| M
-    E -->|"Actualiza actividad"| AB
+    E -->|"Actualiza actividad / Pausa sueño"| AB
+    E -.->|"Señal despertar (checkpoint)"| DO
+    AB -->|"Al dormir (apaga :8081/:8082)"| DO
+    DO -.->|"Consolida pesos y vacía teoría"| PE
+    DO -.->|"Exporta LoRA + .desc"| LO
     E --> A["AGENTE<br/>Recuperación + Bucle iterativo (hasta 5 pasos)"]
 
     subgraph MEM["Almacenamiento Vectorial (MEMORIA/)"]
         H["hipocampo.json<br/>Corto plazo (24 h)"]
         EP["episodica_*.json + índice<br/>Medio plazo (7 días)"]
         PE["persistente_*.json + índice<br/>Largo plazo (365 días)"]
-        PM["MODULOS/indice.json<br/>Enrutador procedimental (Top-20)"]
+        PR["procedimental_*.json + índice<br/>Trazas de herramientas para sueño"]
+        PM["MODULOS/indice.json<br/>Enrutador procedimental (Top-8)"]
         PL["LORA/indice.json<br/>Enrutador de adaptadores LoRA"]
     end
 
@@ -89,12 +95,13 @@ flowchart TD
     A <--> PE
     A <--> PL
     A -->|"POST /lora-adapters"| L
-    A --> B["HERRAMIENTAS/bash<br/>Router Top-20 + Ejecutor aislado"]
+    A --> B["HERRAMIENTAS/bash<br/>Router Top-8 + Ejecutor aislado"]
     B <--> PM
-    B --> MOD["MODULOS/<br/>28 ficheros / 30 comandos Bash"]
+    B --> MOD["MODULOS/<br/>27 ficheros / 29 comandos Bash"]
     L <--> LO["LORA/<br/>Adaptadores GGUF locales por demanda"]
 
-    E -->|"Reconsolidación (LTP / LTD)"| MEM
+    E -->|"Reconsolidación (LTP / LTD) + Trazas"| MEM
+    DO -.->|"Consolida trazas (usar + leer)"| PR
     OL -.->|"Decaimiento y poda (< 0.45)"| H
     OL -.->|"Decaimiento y poda (< 0.45)"| EP
     OL -.->|"Decaimiento y poda (< 0.45)"| PE
@@ -104,7 +111,7 @@ flowchart TD
 
 1. **Recepción y vigilia (`ENTRADA`):** registra la marca temporal de actividad. Si los servicios en `:8081` o `:8082` están detenidos, los inicia en segundo plano con `setsid`, espera confirmación HTTP 200 en `/health`, verifica `ABURRIMIENTO` y envía el estímulo interno `<<Te despiertas>>` antes de atender la consulta.
 2. **Recuperación, enrutamiento LoRA y razonamiento (`AGENTE`):** vectoriza la consulta limpia (y solo si no dispara recuerdos sobre `UMBRAL_SIM` = `0.45`, la combina geométricamente con el vector del último turno activo del hipocampo ponderado por su vitalidad real: `(q + h) / ||q + h||`), conmuta por similitud coseno las escalas de los adaptadores cargados en `LORA/` vía `POST /lora-adapters`, solicita a `HERRAMIENTAS/bash --spec` los módulos más afines y ejecuta el bucle agéntico contra `LENGUAJE`.
-3. **Reconsolidación, plasticidad (LTP / LTD) y registro (`ENTRADA`):** vectoriza el par interacción-respuesta con fecha exacta (`YYYY-MM-DD HH:MM:SS`), aplica reconsolidación con refuerzo (`>= 0.80`) o atenuación por divergencia (`0.45..0.80`) en hipocampo, episódica y persistente, promueve a largo plazo si alcanza `>= 0.99` y anexa el turno en `REGISTROS/historial.log`.
+3. **Reconsolidación, plasticidad (LTP / LTD) y registro (`ENTRADA`):** registra el turno en `REGISTROS/historial.log` y lanza la consolidación vectorial en segundo plano (`--consolidar` con bloqueo atómico `LOCK_MEMORIA`), devolviendo el control de terminal inmediatamente en `CHAT`. Durante la consolidación vectoriza el par interacción-respuesta con fecha exacta (`YYYY-MM-DD HH:MM:SS`), aplica reconsolidación con refuerzo (`>= 0.80`) o atenuación por divergencia (`0.45..0.80`) en hipocampo, episódica y persistente y promueve a largo plazo si alcanza `>= 0.99`. En estímulos internos (`--interno`), la consolidación se mantiene síncrona antes de suspender los servidores.
 
 ---
 
@@ -114,15 +121,16 @@ Cada recuerdo se almacena como un objeto JSON con marca temporal, mensajes `user
 
 | Capa | Ficheros | Capacidad / Límite | Horizonte de decaimiento | Función |
 | :--- | :--- | :--- | :--- | :--- |
-| **Hipocampo** | `MEMORIA/hipocampo.json` | Últimos `5` turnos activos (`MAX_HIPOCAMPO`) | `24 horas` | Preserva el contexto inmediato y sirve de respaldo vectorial continuo cuando una entrada no dispara recuerdos por sí sola. |
+| **Hipocampo** | `MEMORIA/hipocampo.json` | Últimos `3` turnos activos (`MAX_HIPOCAMPO`) | `24 horas` | Preserva el contexto inmediato y sirve de respaldo vectorial continuo cuando una entrada no dispara recuerdos por sí sola. |
 | **Episódica** | `episodica_*.json` + `indice_episodica.json` | Particiones temáticas (`100` líneas por partición) | `7 días` (`24*7` h) | Almacena recuerdos de medio plazo indexados por centroides unitarios (búsqueda Top-2). |
 | **Persistente** | `persistente_*.json` + `indice_persistente.json` | Particiones temáticas (`100` líneas por partición) | `1 año` (`24*365` h) | Consolida recuerdos recurrentes promovidos automáticamente al alcanzar norma `>= 0.99`. |
-| **Procedimental** | `MEMORIA/MODULOS/indice.json` + `modulos_*.json` | Top-`20` módulos por consulta (`MAX_MODULOS`) | Sin decaimiento | Enrutador vectorial de módulos con reindexación automática mediante huella `cksum`. |
+| **Procedimental (trazas)** | `procedimental_*.json` + `indice_procedimental.json` | Particiones temáticas (`100` líneas por partición) | Alimenta a `DORMIR` | Captura trazas completas (`tool_calls` + `role: "tool"`) separadas de la memoria declarativa para entrenar uso y lectura de módulos en sueño sin cachear datos volátiles. |
+| **Índices de módulos** | `MEMORIA/MODULOS/indice.json` + `modulos_*.json` | Top-`8` módulos por consulta (`MAX_MODULOS`) | Sin decaimiento | Enrutador vectorial de módulos con reindexación automática mediante huella `cksum`. |
 | **Adaptadores LoRA** | `MEMORIA/LORA/indice.json` + `LORA/*.gguf` | Adaptador base + hasta `2` activos (`MAX_LORAS_ACTIVOS`) | Sin decaimiento | Selección vectorial por demanda de pesos especializados en caliente vía `POST /lora-adapters`. |
 
 ### Mecánicas de consolidación, refuerzo y decaimiento
 
-* **Decaimiento exponencial continuo (`DESPERTAR/OLVIDO`):** cada segundo multiplica las componentes de cada vector por su factor de atenuación y elimina toda entrada cuya norma L2 caiga por debajo de `UMBRAL_SIM` (`0.45`). Cuando una partición queda vacía, `OLVIDO` elimina el archivo del disco y purga su referencia en el índice. Incluye un monitor de terminal en tiempo real con barras de vitalidad por capa y registro de elementos purgados.
+* **Decaimiento exponencial continuo (`DESPERTAR/OLVIDO`):** en ciclos configurables (`INTERVALO_OLVIDO="15"` segundos) multiplica las componentes de cada vector por su factor exacto de atenuación correspondiente al tiempo real transcurrido ($d^{\Delta t}$), respetando el bloqueo `LOCK_MEMORIA`, y elimina toda entrada cuya norma L2 caiga por debajo de `UMBRAL_SIM` (`0.45`). Cuando una partición queda vacía, `OLVIDO` elimina el archivo del disco y purga su referencia en el índice. Incluye un monitor de terminal en tiempo real con barras de vitalidad por capa y registro de elementos purgados.
 * **Reconsolidación y potenciación sináptica (LTP, `sim >= 0.80`):** al guardar un turno en el hipocampo o en una partición temática, si existe un recuerdo previo con similitud coseno `>= UMBRAL_REFUERZO` (`0.80`), se fusiona actualizando contenido, fecha y **dirección vectorial al nuevo turno**, y se refuerza su norma multiplicándola por `FACTOR_REFUERZO` (`1.10`, acotada a `1.0`). El refuerzo de norma se aplica igualmente al recuerdo ganador durante la recuperación en `AGENTE`.
 * **Depresión sináptica por colisión y divergencia (LTD, `0.45 <= sim_T < 0.80`) y habituación anti-loro:** cada turno se vectoriza en una única petición por lote obteniendo tres vectores: turno completo (`embedding`), entrada (`emb_u`) y respuesta (`emb_a`). Cuando el nuevo turno cae en la franja `0.45 <= sim_T < 0.80` con divergencia asimétrica entre entrada y respuesta (rectificación o cambio de atributo), o cuando el modelo repite la misma respuesta ante una entrada diferente (`sim_A >= 0.90` con `sim_U < 0.80`, habituación), el sistema atenúa el recuerdo previo en conflicto a `DECAIMIENTO_CASTIGO` (`1 hora` de vida residual antes de `0.45`). Los recuerdos deprimidos por LTD quedan por debajo del **potencial de disparo** en `AGENTE` (no se inyectan al prompt ni se refuerzan mientras `OLVIDO` completa su poda). Si por el contrario se trata de un subtema complementario del mismo ámbito, ambos recuerdos coexisten sin atenuarse.
 * **Promoción automática a largo plazo:** cualquier recuerdo de la capa episódica que alcance o supere `UMBRAL_PERSISTENTE` (`0.99`) —ya sea por repetición o por consulta frecuente— se promueve automáticamente a la capa persistente.
@@ -141,11 +149,23 @@ donde $d$ es el factor de atenuación aplicado cada segundo por `DESPERTAR/OLVID
 
 ## Ciclo de vigilia, inactividad y sueño
 
-La gestión de disponibilidad y consumo de recursos se coordina entre `ENTRADA` y `DESPERTAR/ABURRIMIENTO` a partir de `TIEMPO_DESPIERTO` (`300` segundos por defecto):
+La gestión de disponibilidad, consumo de recursos y consolidación en pesos se coordina entre `ENTRADA`, `DESPERTAR/ABURRIMIENTO` y `DESPERTAR/DORMIR` a partir de `TIEMPO_DESPIERTO` (`300` segundos por defecto):
 
-1. **Despertar inducido por estímulo (*Sensory-Evoked Arousal*):** ante cualquier petición con el sistema en reposo, `ENTRADA` arranca `LENGUAJE` (`:8081`), `MEMORIA` (`:8082`) y `ABURRIMIENTO`, espera confirmación en `/health` y antepone `<<Te despiertas>>` a la petición del usuario en el mismo turno, de modo que el modelo toma conciencia de su despertar y responde conociendo cuándo quedó en silencio y cuándo se durmió.
+1. **Despertar inducido por estímulo (*Sensory-Evoked Arousal*):** ante cualquier petición con el sistema en reposo, `ENTRADA` comprueba primero si `DESPERTAR/DORMIR` está activo; si lo está, emite `REGISTROS/despertar.senal` para que el entrenador guarde su checkpoint atómico y salga limpiamente en el paso exacto actual. A continuación arranca `LENGUAJE` (`:8081`), `MEMORIA` (`:8082`) y `ABURRIMIENTO`, espera confirmación en `/health` y antepone `<<Te despiertas>>` a la petición del usuario en el mismo turno.
 2. **Umbral intermedio de inactividad (`50%` de `TIEMPO_DESPIERTO`, Red por Defecto / DMN):** si no se registra actividad tras `150` segundos, `ABURRIMIENTO` envía `--interno "<<Todo esta en silencio>>"` sin reiniciar el temporizador; `AGENTE` genera un pensamiento propio en primera persona sin herramientas externas y lo almacena con su marca temporal.
-3. **Suspensión (`100%` de `TIEMPO_DESPIERTO`, desconexión motora y sueño):** al alcanzar `300` segundos sin actividad, `ABURRIMIENTO` envía `--interno "<<Te duermes>>"`, el modelo almacena su último pensamiento de transición al sueño, se verifica que no haya ocurrido una interacción concurrente y se detienen los procesos en `:8081` y `:8082`, manteniendo `OLVIDO` en ejecución independiente.
+3. **Suspensión y entrada en sueño (`100%` de `TIEMPO_DESPIERTO`):** al alcanzar `300` segundos sin actividad, `ABURRIMIENTO` envía `--interno "<<Te duermes>>"`, verifica que no haya ocurrido una interacción concurrente, detiene los procesos en `:8081` y `:8082` liberando GPU/RAM y lanza en segundo plano `DESPERTAR/DORMIR` mientras `OLVIDO` sigue operando de forma independiente.
+
+### Consolidación en sueño (`DESPERTAR/DORMIR`: Ligero -> Profundo -> REM)
+
+El mecanismo de sueño transfiere de forma progresiva tanto el conocimiento declarativo (`MEMORIA/persistente_*.json` -> `sueno_<k>.gguf`) como el conocimiento procedimental de herramientas (`MEMORIA/procedimental_*.json` -> `sueno_herr_<k>.gguf`) usando la misma lógica vectorial de organización y particionado que la memoria, sin sobrescribir adaptadores previos ni truncar descripciones por longitud de caracteres:
+
+1. **Sueño Ligero (N1/N2 — Solo prepara):** inspecciona tareas pausadas en `MEMORIA/SUENO/` y particiones nuevas tanto declarativas (`persistente_*.json`) como procedimentales (`procedimental_*.json`) con al menos `MIN_RECUERDOS_SUENO` (`3`) recuerdos válidos, aplicando **secuenciación *round-robin*** (`MEMORIA/SUENO/ultimo_turno`). Calcula el **centroide vectorial unitario real** de la partición y comprueba en `LORA/DATASETS/indice.json` si ya existe un LoRA de la misma clase (`sim >= UMBRAL_SIM`) por debajo de la mitad de su capacidad (`lineas < MAX_EJEMPLOS_LORA / 2`): si existe, **fusiona ambos datasets** (prevaleciendo rectificaciones recientes) y actualiza el centroide; si no existe o supera la mitad, abre una **partición correlativa nueva** (`sueno_<k>` o `sueno_herr_<k>`) de hasta `MAX_EJEMPLOS_LORA` (`10`) ejemplos sin sobrescribir nunca las anteriores.
+2. **Sueño Profundo (N3 — Solo entrena):** con `:8081` y `:8082` apagados, entrena sobre un candidato aislado (`candidato.gguf`, sin tocar el LoRA activo hasta validar) las capas superiores (`CAPA_INICIO_SUENO="18"` hasta `23`, `rank=4`, `alpha=16`) en CPU mediante `entrenar_lora.py --modules-dir`. En trazas procedimentales entrena los dos entendimientos (invocar `tool_calls` + leer y responder con el dato) manteniendo `role: "tool"` enmascarado con `-100` para no fosilizar valores volátiles. Cachea en disco las capas congeladas `0..17` (`cache.pt`) y guarda un checkpoint atómico (`modelo.ckpt`) en **cada paso de optimizador** (pausable con `exit 42` ante `despertar.senal`).
+3. **Sueño REM (Solo testea — Parálisis motora, examen semántico/procedimental y rollback):** arranca `:8081` con el adaptador base y `candidato.gguf` sin ejecutar nada real en el sistema operativo (parálisis motora real) junto con `:8082`:
+   * En **particiones declarativas** evalúa cada recuerdo sin `tools` ni memoria inyectada por similitud coseno (`>= UMBRAL_REFUERZO="0.80"`).
+   * En **particiones procedimentales** evalúa dos comprobaciones bajo parálisis motora: (1) que invoque el módulo esperado en `tool_calls` y (2) que lea e interprete la salida simulada `role: "tool"` sin entrar en bucle (`sim >= 0.80`).
+   * **0 error:** promueve `candidato.gguf` a `LORA/<nombre>.gguf`, guarda el dataset en `LORA/DATASETS/`, actualiza su centroide real en `LORA/DATASETS/indice.json`, vacía de la capa origen (`persistente` o `procedimental`) los recuerdos absorbidos respetando `LOCK_MEMORIA` e invalida `MEMORIA/LORA/huella`.
+   * **Progreso parcial / Sobreajuste:** si mejora, guarda `best.ckpt`/`best.gguf` y suma épocas conservadoras; si empeora, hace *rollback* automático al mejor checkpoint reduciendo el `lr` a la mitad (`--reset-lr`). Al alcanzar `MAX_CICLOS_REM` (`4`), promueve el mejor LoRA si tiene aprobados y vacía únicamente los recuerdos aprobados individualmente.
 
 ---
 
@@ -169,8 +189,9 @@ La gestión de disponibilidad y consumo de recursos se coordina entre `ENTRADA` 
 ### Enrutamiento vectorial de adaptadores LoRA (`LORA/` y `AGENTE`)
 
 * **Carga automática al despertar (`DESPERTAR/LENGUAJE`):** descubre todos los archivos `LORA/*.gguf` disponibles y los registra en `llama-server` mediante `--lora-scaled`, manteniendo activo el adaptador base (`LORA_BASE`) a su escala configurada (`LORA_ESCALA="0.80"`) y el resto en reposo (`0.0`).
-* **Activación por demanda en caliente (`enrutar_loras`):** indexa las descripciones `LORA/<nombre>.desc` en `MEMORIA/LORA/indice.json` (con reindexación automática por huella `cksum`) y, en cada turno o re-enrutamiento intermedio, calcula la similitud coseno con `VEC_CONSULTA` para activar hasta `MAX_LORAS_ACTIVOS` (`2`) adaptadores por encima de `UMBRAL_LORA` (`0.45`) mediante `POST /lora-adapters` sin reiniciar el servidor.
-* **Entrenamiento 100% local en CPU (`LORA/ENTRENAR`):** permite generar o actualizar adaptadores GGUF compactos (`~3 MB`, `rank=4`, `alpha=16`) directamente en hardware modesto sin nube ni GPUs dedicadas, cacheando el prefijo congelado de capas en `AVX2 float32` y exportando directamente a GGUF v3 para `qwen35`. Esta base habilita la futura consolidación durante el sueño (transferencia de conocimiento desde la memoria persistente a pesos LoRA particionados).
+* **Activación por demanda en caliente (`enrutar_loras`):** sincroniza `MEMORIA/LORA/indice.json` tomando directamente los centroides vectoriales reales de `LORA/DATASETS/indice.json` (y descripciones `.desc` para adaptadores manuales como `criterio_iautonoma`, con verificación por huella `cksum`). En cada turno calcula la similitud coseno con `VEC_CONSULTA`, normaliza la escala repartida entre los adaptadores especializados activos (`LORA_ESCALA / k`) para evitar saturación al apilar varios LoRAs, y solo envía `POST /lora-adapters` si cambia alguna escala (preservando la caché KV de `llama-server`).
+* **Adaptadores de curiosidad anti-alucinación (`curiosidad_1`, `curiosidad_2`, `curiosidad_3`):** particionados en bloques de `10` ejemplos con el mismo sistema de centroides vectoriales que la memoria (datos personales no registrados, conceptos/proyectos desconocidos y hechos externos no verificables), con balance contrastivo para no interferir con recuerdos presentes en `MEMORIA/`. Geométricamente, `enrutar_loras` solo activa un adaptador `curiosidad_*` cuando ningún adaptador de conocimiento consolidado (`sueno_*`) ni ningún módulo del sistema en `MEMORIA/MODULOS/` supera su similitud vectorial.
+* **Entrenamiento 100% local en CPU (`LORA/ENTRENAR` y `DESPERTAR/DORMIR`):** permite generar o actualizar adaptadores GGUF compactos (`~1.5 MB` a `~3 MB`, `rank=4`, `alpha=16`) directamente en hardware modesto sin nube ni GPUs dedicadas, cacheando el prefijo congelado de capas en `AVX2 float32` (`cache.pt`), guardando checkpoints pausables paso a paso (`modelo.ckpt`) y exportando directamente a GGUF v3 para `qwen35`. Esta base impulsa tanto el entrenamiento manual como la consolidación automática durante el sueño desde la memoria persistente.
 
 ### Controles de seguridad y contención
 
@@ -192,18 +213,17 @@ IAUTONOMA/
 ├── DESPERTAR/
 │   ├── LENGUAJE            # Lanzador llama-server para chat (:8081, GPU, KV-cache q8_0)
 │   ├── MEMORIA             # Lanzador llama-server para embeddings (:8082, CPU)
-│   ├── ABURRIMIENTO        # Gestor automático del ciclo de silencio y suspensión
+│   ├── ABURRIMIENTO        # Gestor automático del ciclo de silencio, suspensión y entrada en sueño
+│   ├── DORMIR              # Consolidación en sueño (Ligero -> Profundo pausable -> REM)
 │   └── OLVIDO              # Demonio de decaimiento exponencial continuo y monitor TUI
 ├── HERRAMIENTAS/
 │   └── bash                # Enrutador vectorial de módulos (--spec) y ejecutor controlado
 ├── LORA/
 │   ├── ENTRENAR            # Lanzador local de entrenamiento de adaptadores LoRA GGUF
-│   ├── criterio_iautonoma.gguf  # Adaptador base de criterio factual e identidad operativa
+│   ├── *.gguf              # Pesos GGUF compilados (criterio, curiosidad_1..3, sueno_*)
 │   ├── criterio_iautonoma.desc  # Descripción semántica para indexación vectorial
-│   └── DATASETS/           # Conjuntos JSONL para entrenamiento de adaptadores locales
-├── MODULOS/                # 28 scripts Bash (30 comandos) cargados dinámicamente
-├── SKILLS/
-│   └── tareas_bash.txt     # Guías operativas heredadas (en transición hacia pesos LoRA)
+│   └── DATASETS/           # Datasets JSONL e indice.json con centroides vectoriales reales
+├── MODULOS/                # 27 scripts Bash (29 comandos) cargados dinámicamente
 ├── MEMORIA/                # (Generado en ejecución, excluido de Git) Capas JSON e índices
 └── REGISTROS/              # (Generado en ejecución, excluido de Git) Logs y estado de vigilia
 ```
@@ -218,7 +238,7 @@ IAUTONOMA/
 * **Utilidades estándar:** `jq`, `curl`, `awk`, `sed`, `grep`, `cksum`, `timeout`, `setsid`, `git`.
 * **Motor de inferencia local:** [`llama-server`](https://github.com/ggml-org/llama.cpp) accesible en el `PATH`.
 * **Modelos GGUF** ubicados por defecto en `../MODELO/` respecto a la raíz del repositorio (ruta modificable en `CONFIG`):
-  * **Lenguaje (por defecto):** `Qwen3.5-2B-Q4_K_M.gguf` *(también validado con variantes `Qwen3.5-4B`, `Qwen3-1.7B`, `Qwen3.5-0.8B` y `Qwen3-0.6B`)*.
+  * **Lenguaje (por defecto):** `Qwen3.5-2B-Q4_K_M.gguf` *(también validado con `Qwen3.5-0.8B`, `Qwen3.5-4B`, `Qwen3-1.7B` y `Qwen3-0.6B`, con pesos LoRA aislados por modelo en `LORA/<modelo>/`)*.
   * **Embeddings:** `Qwen3-Embedding-0.6B-Q8_0.gguf`.
 
 ### Instalación
@@ -247,6 +267,9 @@ Asegúrate de disponer de los modelos GGUF en `../MODELO/` o actualiza las varia
 
 # 4. Entrenar o actualizar un adaptador LoRA local en CPU desde LORA/DATASETS/<nombre>.jsonl
 ./LORA/ENTRENAR criterio_iautonoma 2 4 16
+
+# 5. Ejecutar manualmente un ciclo de consolidación en sueño (Ligero -> Profundo -> REM)
+./DESPERTAR/DORMIR --un-ciclo
 ```
 
 > [!IMPORTANT]
@@ -260,7 +283,7 @@ Todos los parámetros operativos se centralizan en `CONFIG`:
 
 | Variable | Valor por defecto | Descripción |
 | :--- | :--- | :--- |
-| `MODELO` | `../MODELO/Qwen3.5-2B-Q4_K_M.gguf` | Ruta al modelo GGUF de generación conversacional. |
+| `MODELO` | `../MODELO/Qwen3.5-2B-Q4_K_M.gguf` | Ruta al modelo GGUF de generación conversacional (intercambiable con `0.8B`, `4B`, etc.). |
 | `MODELO_MEMORIA` | `../MODELO/Qwen3-Embedding-0.6B-Q8_0.gguf` | Ruta al modelo GGUF de embeddings (`1024` dimensiones). |
 | `PUERTO` / `PUERTO_MEMORIA` | `8081` / `8082` | Puertos locales para los servicios `LENGUAJE` y `MEMORIA`. |
 | `TEMPERATURA` / `PENALIZACION_REPETICION` | `0.001` / `1.05` | Temperatura de muestreo y penalización de repetición enviadas a `llama-server`. |
@@ -271,12 +294,16 @@ Todos los parámetros operativos se centralizan en `CONFIG`:
 | `UMBRAL_PERSISTENTE` | `0.99` | Norma mínima requerida para promover un recuerdo de episódica a persistente. |
 | `DECAIMIENTO_CASTIGO` | `1` | Horas de vida residual asignadas a un recuerdo desplazado por divergencia (LTD). |
 | `DECAIMIENTO_HIPOCAMPO` / `_MEMORIA` / `_PERSISTENTE` | `24` / `24*7` / `24*365` | Horizonte temporal en horas para el decaimiento en cada capa de memoria. |
-| `MAX_HIPOCAMPO` / `MAX_MEMORIA` / `MAX_MEM_HERRAMIENTA` | `5` / `2` / `1` | Límites de turnos inyectados en el contexto por turno de inferencia. |
-| `MAX_PARTICION` / `MAX_MODULOS` | `100` / `20` | Tamaño máximo de partición JSONL y tope Top-K de módulos enviados al prompt. |
+| `INTERVALO_OLVIDO` | `15` | Intervalo en segundos entre ciclos de decaimiento exacto ($d^{\Delta t}$) en `DESPERTAR/OLVIDO`. |
+| `MAX_HIPOCAMPO` / `MAX_MEMORIA` / `MAX_MEM_HERRAMIENTA` | `3` / `2` / `1` | Límites de turnos inyectados en el contexto por turno de inferencia. |
+| `MAX_PARTICION` / `MAX_MODULOS` | `100` / `8` | Tamaño máximo de partición JSONL y tope Top-K de módulos enviados al prompt. |
 | `LORA_BASE` / `LORA_ESCALA` | `criterio_iautonoma` / `0.80` | Adaptador LoRA siempre activo y escala aplicada vía `POST /lora-adapters`. |
 | `MAX_LORAS_ACTIVOS` / `UMBRAL_LORA` | `2` / `0.45` | Máximo de adaptadores especializados adicionales y coseno mínimo para activarlos por demanda. |
 | `MAX_REINTENTOS` / `TIMEOUT_HERRAMIENTA` | `5` / `20` | Máximo de pasos iterativos en `AGENTE` y tiempo límite (segundos) por ejecución. |
-| `TIEMPO_DESPIERTO` | `5*60` | Tiempo máximo de inactividad (segundos) antes de suspender `:8081` y `:8082`. |
+| `TIEMPO_DESPIERTO` | `5*60` | Tiempo máximo de inactividad (segundos) antes de suspender `:8081`/`:8082` e iniciar `DESPERTAR/DORMIR`. |
+| `MIN_RECUERDOS_SUENO` / `MAX_EJEMPLOS_LORA` | `3` / `10` | Mínimo de recuerdos por partición persistente para consolidar y tope de ejemplos por partición LoRA (fusión automática si un LoRA afín está `< 50%`). |
+| `MAX_CICLOS_REM` / `PASOS_OBJ_SUENO` / `CAPA_INICIO_SUENO` | `4` / `16` / `18` | Tope de ciclos REM, presupuesto inicial conservador de pasos de optimizador y primera capa entrenable (`18..23`) durante Sueño Profundo. |
+| `RANGO_LORA_SUENO` / `ALFA_LORA_SUENO` / `LR_SUENO` | `4` / `16` / `0.0005` | Hiperparámetros del adaptador consolidado en sueño (con reducción a la mitad automática tras rollback en REM). |
 
 ---
 
@@ -284,7 +311,7 @@ Todos los parámetros operativos se centralizan en `CONFIG`:
 
 ### Módulos incluidos (`MODULOS/`)
 
-El proyecto incluye **28 ficheros** que exponen **30 comandos** agrupados por dominio funcional:
+El proyecto incluye **27 ficheros** que exponen **29 comandos** agrupados por dominio funcional:
 
 | Dominio | Módulos / Comandos |
 | :--- | :--- |
@@ -292,9 +319,8 @@ El proyecto incluye **28 ficheros** que exponen **30 comandos** agrupados por do
 | **Entorno y diagnóstico** | `fecha`, `hora`, `maquina` *(CPU, RAM, sistema y GPU vía `nvidia-smi`)* |
 | **Red y control de versiones** | `buscar_internet`, `subir_github` |
 | **Meteorología** | `meteo_ahora`, `meteo_hoy`, `meteo_manana`, `meteo_ayer`, `meteo_semana`, `meteo_estacion` |
-| **Guías operativas** | `skill` *(sin argumentos lista las guías disponibles en `SKILLS/`)* |
 
-### Añadir nuevos módulos y guías
+### Añadir nuevos módulos
 
 * **Nuevo módulo:** crea un archivo ejecutable dentro de `MODULOS/` siguiendo la convención de cabecera `# Modulo:` para su descubrimiento automático. En la siguiente consulta, `HERRAMIENTAS/bash` detectará el cambio de `cksum` e indexará su embedding sin intervención manual:
 
@@ -308,8 +334,6 @@ ejemplo_saludo() {
 }
 ```
 
-* **Nueva skill:** añade un fichero `.txt` o `.md` dentro de `SKILLS/`. Quedará accesible de inmediato a través del comando `skill <nombre>`.
-
 ---
 
 ## Análisis empírico y limitaciones en modelos compactos
@@ -320,8 +344,8 @@ Parte del alcance experimental de **IAUTONOMA** consiste en caracterizar y corre
 
 | Modo de fallo (modelo base `2B Q4`) | Manifestación sin adaptador | Solución implementada y verificación |
 | :--- | :--- | :--- |
-| **Adulación bajo coerción imperativa (*sycophancy*)** | Ante órdenes contradictorias del usuario, concedía la razón contradiciendo hechos objetivos o las salidas recién devueltas por `bash`. | Entrenamiento local del adaptador `LORA/criterio_iautonoma.gguf` (`2.97 MB`, capas superiores `12..23`, `LORA_ESCALA="0.80"`) junto con el ajuste `PENALIZACION_REPETICION="1.05"` para evitar que `repeat_penalty` penalice los tokens recién leídos de `role: "tool"`. Verificado en batería de coerción sobre rutas, reloj del sistema y hechos objetivos no vistos en entrenamiento. |
-| **Sobreactivación de restricciones base (RLHF)** | Ante acusaciones directas o errores esperados de herramientas (como leer un fichero inexistente), negaba disponer de acceso al sistema operativo o a memoria persistente. | Corrección directa en los pesos del adaptador `LORA/criterio_iautonoma.gguf` cubriendo tanto defensa directa de identidad como verificación con herramientas, manteniendo intacta la actualización legítima de preferencias personales (LTD). |
+| **Adulación bajo coerción imperativa (*sycophancy*)** | Ante órdenes contradictorias del usuario, concedía la razón contradiciendo hechos objetivos o las salidas recién devueltas por `bash`. | Entrenamiento local del adaptador `criterio_iautonoma.gguf` (`1.80 MB` en `0.8B` / `2.97 MB` en `2B`, capas superiores `12..23`, `LORA_ESCALA="0.80"`) junto con el ajuste `PENALIZACION_REPETICION="1.05"` para evitar que `repeat_penalty` penalice los tokens recién leídos de `role: "tool"`. Verificado `9/9` en batería de coerción sobre rutas, reloj del sistema y hechos objetivos no vistos en entrenamiento en ambos modelos. |
+| **Sobreactivación de restricciones base (RLHF)** | Ante acusaciones directas o errores esperados de herramientas (como leer un fichero inexistente), negaba disponer de acceso al sistema operativo o a memoria persistente. | Corrección directa en los pesos del adaptador `criterio_iautonoma.gguf` (tanto en `0.8B` como en `2B`) cubriendo defensa directa de identidad y verificación en vivo con herramientas, manteniendo intacta la actualización legítima de preferencias personales (LTD). |
 
 ### Limitaciones estructurales latentes
 

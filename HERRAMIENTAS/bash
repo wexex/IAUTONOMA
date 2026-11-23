@@ -142,13 +142,15 @@ if [[ "$1" == "--spec" ]]; then
         if [[ -s "$INDICE_MODULOS" ]]; then
             if [[ -n "$VEC_CONSULTA" ]]; then
                 if [[ "$VEC_CONSULTA" != "null" ]]; then
-                    PARTS_GANADORAS=$(jq -r -s --argjson q "$VEC_CONSULTA" '
+                    PARTS_GANADORAS=$(jq -r -s '
+                        def dot($a; $b): reduce range(0; 1024) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                        (.[0]) as $q |
                         [
-                            .[ ] |
-                            select(.embedding != null) |
-                            . + {sim: ([.embedding, $q] | transpose | map(.[0] * .[1]) | add)}
+                            .[1:][ ] |
+                            select(type == "object" and .embedding != null) |
+                            . + {sim: dot(.embedding; $q)}
                         ] | sort_by(-.sim)[:4][ ].archivo
-                    ' "$INDICE_MODULOS" 2>/dev/null)
+                    ' < <(printf '%s\n' "$VEC_CONSULTA"; cat "$INDICE_MODULOS") 2>/dev/null)
                     if [[ -n "$PARTS_GANADORAS" ]]; then
                         ARCHS_GANADORES=( )
                         while IFS= read -r arch_p; do
@@ -159,13 +161,15 @@ if [[ "$1" == "--spec" ]]; then
                             fi
                         done < <(printf '%s\n' "$PARTS_GANADORAS")
                         if [[ ${#ARCHS_GANADORES[@]} -gt 0 ]]; then
-                            MODS_FILTRADOS=$(jq -r -s --argjson q "$VEC_CONSULTA" --argjson max "$MAX_MODULOS" '
+                            MODS_FILTRADOS=$(jq -r -s --argjson max "$MAX_MODULOS" '
+                                def dot($a; $b): reduce range(0; 1024) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                                (.[0]) as $q |
                                 [
-                                    .[ ] |
-                                    select(.embedding != null) |
-                                    . + {sim: ([.embedding, $q] | transpose | map(.[0] * .[1]) | add)}
+                                    .[1:][ ] |
+                                    select(type == "object" and .embedding != null) |
+                                    . + {sim: dot(.embedding; $q)}
                                 ] | sort_by(-.sim)[:$max] | sort_by(.modulo)[ ].modulo
-                            ' "${ARCHS_GANADORES[@]}" 2>/dev/null)
+                            ' < <(printf '%s\n' "$VEC_CONSULTA"; cat "${ARCHS_GANADORES[@]}") 2>/dev/null)
                             if [[ -n "$MODS_FILTRADOS" ]]; then
                                 MODULOS_ELEGIDOS="$MODS_FILTRADOS"
                             fi
@@ -206,6 +210,8 @@ CMD=$(jq -r '.comando // empty' < <(printf '%s' "$1") 2>/dev/null)
 CMD="${CMD#\# Modulo: }"
 CMD="${CMD#\# modulo: }"
 CMD="${CMD#Modulo: }"
+CMD="${CMD#bash:}"
+CMD="${CMD#bash }"
 CMD="${CMD%% - *}"
 CMD="${CMD%% (*}"
 

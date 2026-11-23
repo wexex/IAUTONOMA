@@ -19,7 +19,8 @@ if [[ -z "$NOMBRE" ]]; then
 fi
 
 ARCH_DATASET="$DIR_LORA_DATASETS/${NOMBRE}.jsonl"
-ARCH_SALIDA="$DIR_LORA/${NOMBRE}.gguf"
+mkdir -p "$DIR_LORA_PESOS"
+ARCH_SALIDA="$DIR_LORA_PESOS/${NOMBRE}.gguf"
 
 if [[ ! -s "$ARCH_DATASET" ]]; then
     echo "Error: no existe el dataset $ARCH_DATASET"

@@ -8,6 +8,22 @@ ENTRADA="$*"
 # Espera activa hasta que el servidor esté vivo y respondiendo (HTTP 200)
 while ! curl -sf "http://${HOST}:${PUERTO}/health" >/dev/null 2>&1; do sleep 0.5; done
 
+# Si un turno previo aun esta consolidando memoria en segundo plano, esperar brevemente su cierre atomico
+if [[ -s "$LOCK_MEMORIA" ]]; then
+    ESPERA_LOCK=0
+    while [[ $ESPERA_LOCK -lt 50 ]]; do
+        if [[ ! -s "$LOCK_MEMORIA" ]]; then break; fi
+        LPID=$(cat "$LOCK_MEMORIA" 2>/dev/null)
+        if [[ -z "$LPID" ]]; then break; fi
+        if ! kill -0 "$LPID" 2>/dev/null; then
+            rm -f "$LOCK_MEMORIA" 2>/dev/null
+            break
+        fi
+        sleep 0.1
+        ESPERA_LOCK=$((ESPERA_LOCK + 1))
+    done
+fi
+
 H_HIP=$(( ${DECAIMIENTO_HIPOCAMPO} ))
 H_MEM=$(( ${DECAIMIENTO_MEMORIA} ))
 H_PER=$(( ${DECAIMIENTO_PERSISTENTE} ))
@@ -60,19 +76,24 @@ enrutar_loras() {
     ' < <(echo "$LORAS_SRV") 2>/dev/null)
     if [[ "$ESTADO_LORA" == "ROUTE" ]]; then
         mkdir -p "$DIR_MEM_LORA"
-        RAW_DESC=""
-        for fl in "$DIR_LORA"/*.gguf; do
+        RAW_HUELLA=""
+        LISTA_GGUF=( )
+        for fl in "$DIR_LORA_PESOS"/*.gguf; do
             if [[ -s "$fl" ]]; then
                 NOM_L="$(basename "$fl" .gguf)"
-                DESC_L="$NOM_L"
+                LISTA_GGUF+=("$NOM_L")
+                DESC_H=""
                 if [[ -s "$DIR_LORA/${NOM_L}.desc" ]]; then
-                    DESC_L=$(tr '\r\n' '  ' < "$DIR_LORA/${NOM_L}.desc")
+                    DESC_H=$(cksum "$DIR_LORA/${NOM_L}.desc" 2>/dev/null)
                 fi
-                RAW_DESC+="${NOM_L}	${DESC_L}"$'\n'
+                RAW_HUELLA+="${NOM_L}	${DESC_H}"$'\n'
             fi
         done
-        if [[ -n "$RAW_DESC" ]]; then
-            HUELLA_L=$(cksum < <(printf '%s' "$RAW_DESC"))
+        if [[ -s "$INDICE_LORA_DATASETS" ]]; then
+            RAW_HUELLA+="IDX	$(cksum "$INDICE_LORA_DATASETS" 2>/dev/null)"$'\n'
+        fi
+        if [[ ${#LISTA_GGUF[@]} -gt 0 ]]; then
+            HUELLA_L=$(cksum < <(printf '%s' "$RAW_HUELLA"))
             REIND_L=0
             if [[ ! -s "$INDICE_LORA" ]]; then REIND_L=1; fi
             if [[ ! -s "$DIR_MEM_LORA/huella" ]]; then REIND_L=1; fi
@@ -81,27 +102,59 @@ enrutar_loras() {
                 if [[ "$HUELLA_L_OLD" != "$HUELLA_L" ]]; then REIND_L=1; fi
             fi
             if [[ $REIND_L -eq 1 ]]; then
-                if curl -sf "http://${HOST}:${PUERTO_MEMORIA}/health" >/dev/null 2>/dev/null; then
-                    > "${INDICE_LORA}.tmp"
-                    while IFS=$'\t' read -r nom_l desc_l; do
-                        if [[ -n "$nom_l" ]]; then
-                            PAY_L=$(jq -a -n --arg txt "$desc_l" '{input: $txt}')
+                > "${INDICE_LORA}.tmp"
+                for nom_l in "${LISTA_GGUF[@]}"; do
+                    ENT_CENT=""
+                    if [[ -s "$INDICE_LORA_DATASETS" ]]; then
+                        ENT_CENT=$(jq -a -c --arg nom "$nom_l" 'select(.nombre == $nom and .embedding != null)' "$INDICE_LORA_DATASETS" 2>/dev/null)
+                    fi
+                    if [[ -n "$ENT_CENT" ]]; then
+                        printf '%s\n' "$ENT_CENT" >> "${INDICE_LORA}.tmp"
+                    elif curl -sf "http://${HOST}:${PUERTO_MEMORIA}/health" >/dev/null 2>/dev/null; then
+                        if [[ -s "$DIR_LORA_DATASETS/${nom_l}.jsonl" ]]; then
+                            if [[ ! -s "$DIR_LORA/${nom_l}.desc" ]]; then
+                                PAY_DS=$(jq -a -c -s '{input: [ .[ ] | select(type == "object" and (.messages | length) >= 2) | ((.messages[0].content // "") + " " + (.messages[1].content // "")) ]}' "$DIR_LORA_DATASETS/${nom_l}.jsonl" 2>/dev/null)
+                                RESP_DS=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_DS" 2>/dev/null)
+                                if [[ -n "$RESP_DS" ]]; then
+                                    jq -a -c --arg nom "$nom_l" '
+                                        def norm($v): ((reduce $v[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                                        if (.data and (.data | length) > 0) then
+                                            ([ .data[ ].embedding | (norm(.)) as $n | map(. / $n) ]) as $units |
+                                            ($units[0] | length) as $dim |
+                                            (reduce range(0; $dim) as $i ([ ]; . + [(reduce $units[ ] as $u (0; . + ($u[$i] // 0))) / ($units | length)])) as $mean |
+                                            (norm($mean)) as $nm |
+                                            {nombre: $nom, lineas: ($units | length), embedding: ($mean | map(((. / $nm) * 10000 | round) / 10000))}
+                                        else
+                                            empty
+                                        end
+                                    ' < <(printf '%s' "$RESP_DS") >> "${INDICE_LORA}.tmp" 2>/dev/null
+                                fi
+                            fi
+                        fi
+                        if ! jq -e -s --arg nom "$nom_l" 'any(.[ ]; .nombre == $nom)' "${INDICE_LORA}.tmp" >/dev/null 2>/dev/null; then
+                            DESC_L="$nom_l"
+                            if [[ -s "$DIR_LORA/${nom_l}.desc" ]]; then
+                                DESC_L=$(tr '\r\n' '  ' < "$DIR_LORA/${nom_l}.desc")
+                            fi
+                            PAY_L=$(jq -a -n --arg txt "$DESC_L" '{input: $txt}')
                             RESP_L=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_L" 2>/dev/null)
                             if [[ -n "$RESP_L" ]]; then
-                                jq -a -c --arg nom "$nom_l" --arg desc "$desc_l" '
+                                jq -a -c --arg nom "$nom_l" '
                                     if .data then
-                                        {nombre: $nom, descripcion: $desc, embedding: (.data[0].embedding | map((. * 10000 | round) / 10000))}
+                                        {nombre: $nom, embedding: (.data[0].embedding | map((. * 10000 | round) / 10000))}
                                     else
                                         empty
                                     end
-                                ' < <(echo "$RESP_L") >> "${INDICE_LORA}.tmp"
+                                ' < <(printf '%s' "$RESP_L") >> "${INDICE_LORA}.tmp" 2>/dev/null
                             fi
                         fi
-                    done < <(printf '%s' "$RAW_DESC")
-                    if [[ -s "${INDICE_LORA}.tmp" ]]; then
-                        mv -f "${INDICE_LORA}.tmp" "$INDICE_LORA"
-                        printf '%s\n' "$HUELLA_L" > "$DIR_MEM_LORA/huella"
                     fi
+                done
+                if [[ -s "${INDICE_LORA}.tmp" ]]; then
+                    mv -f "${INDICE_LORA}.tmp" "$INDICE_LORA"
+                    printf '%s\n' "$HUELLA_L" > "$DIR_MEM_LORA/huella"
+                else
+                    rm -f "${INDICE_LORA}.tmp" 2>/dev/null
                 fi
             fi
         fi
@@ -110,13 +163,39 @@ enrutar_loras() {
             IND_LORA_JSON=$(jq -a -c -s '.' "$INDICE_LORA" 2>/dev/null)
             if [[ -z "$IND_LORA_JSON" ]]; then IND_LORA_JSON="[ ]"; fi
         fi
+        MAX_SIM_MOD="0.0"
+        if [[ -n "$VEC_CONSULTA" ]]; then
+            if [[ "$VEC_CONSULTA" != "null" ]]; then
+                MOD_FILES=( )
+                for mf in "$DIR_MEM_MODULOS"/modulos_*.json; do
+                    if [[ -s "$mf" ]]; then MOD_FILES+=("$mf"); fi
+                done
+                if [[ ${#MOD_FILES[@]} -gt 0 ]]; then
+                    MAX_SIM_MOD=$(jq -r -s '
+                        def norm($a): ((reduce $a[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                        def dot($a; $b): reduce range(0; ($a | length)) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                        (.[0]) as $q |
+                        (norm($q)) as $nq |
+                        (
+                            [
+                                .[1:][ ] |
+                                select(type == "object" and .embedding != null and ((.embedding | length) == ($q | length))) |
+                                (dot(.embedding; $q) / (norm(.embedding) * $nq))
+                            ] | max // 0.0
+                        )
+                    ' < <(printf '%s\n' "$VEC_CONSULTA"; cat "${MOD_FILES[@]}") 2>/dev/null)
+                    if [[ -z "$MAX_SIM_MOD" ]]; then MAX_SIM_MOD="0.0"; fi
+                fi
+            fi
+        fi
         PAYLOAD_LORAS=$(jq -a -c -s \
             --arg base "$LORA_BASE" \
             --argjson esc "${LORA_ESCALA:-1.0}" \
             --argjson umb "${UMBRAL_LORA:-0.45}" \
-            --argjson maxa "${MAX_LORAS_ACTIVOS:-2}" '
-            def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
-            def dot($a; $b): reduce range(0; 1024) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+            --argjson maxa "${MAX_LORAS_ACTIVOS:-2}" \
+            --argjson maxm "${MAX_SIM_MOD:-0.0}" '
+            def norm($a): ((reduce $a[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+            def dot($a; $b): reduce range(0; ($a | length)) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
             (.[0] // [ ]) as $srv |
             (.[1] // [ ]) as $idx |
             (.[2] // null) as $q |
@@ -131,16 +210,26 @@ enrutar_loras() {
                     nom: $nom,
                     prev: (.scale // 0.0),
                     es_base: ($nom == $base),
+                    es_cur: ($nom | startswith("curiosidad_")),
                     sim: (if ($q != null and $ev != null) then (dot($ev; $q) / (norm($ev) * $nq)) else 0 end)
                 }
             ] as $eval |
-            ([ $eval[ ] | select((.es_base | not) and .sim >= $umb) ] | sort_by(-.sim)[:$maxa] | map(.id)) as $ganadores |
+            ([ $eval[ ] | select((.es_base | not) and (.es_cur | not) and .sim >= $umb) ] | sort_by(-.sim)) as $saber |
+            (
+                if ($saber | length) > 0 then
+                    $saber[:$maxa] | map(.id)
+                else
+                    [ $eval[ ] | select(.es_cur and .sim >= $umb and .sim >= $maxm) ] | sort_by(-.sim)[:1] | map(.id)
+                end
+            ) as $ganadores |
+            (if ($ganadores | length) > 0 then ($esc / ($ganadores | length)) else 0.0 end) as $esc_esp |
             [
                 $eval[ ] |
+                .id as $cur_id |
                 {
-                    id: .id,
+                    id: $cur_id,
                     prev: .prev,
-                    scale: (if (.es_base or (($ganadores | index(.id)) != null)) then $esc else 0.0 end)
+                    scale: (if .es_base then $esc elif (($ganadores | index($cur_id)) != null) then $esc_esp else 0.0 end)
                 }
             ] as $res |
             if ([ $res[ ] | select(((.scale - .prev) | fabs) > 0.001) ] | length) > 0 then
@@ -293,30 +382,21 @@ buscar_y_reforzar_capa() {
             while IFS= read -r part; do
                 if [[ -n "$part" ]]; then
                     if [[ -s "$DIR_MEMORIA/$part" ]]; then
-                        TMP_ITEMS_PART="$DIR_MEMORIA/${part}.$$.tmp"
-                        LIN_ASC=""
-                        HUBO_CAMBIO=0
+                        GAN_KEY=""
+                        GAN_TOPE=""
                         while IFS=$'\t' read -r tag payload_line; do
                             if [[ "$tag" == "C" ]]; then
                                 CANDIDATOS_RAW+="$payload_line"$'\n'
-                            elif [[ "$tag" == "I" ]]; then
-                                if [[ $HUBO_CAMBIO -eq 0 ]]; then
-                                    > "$TMP_ITEMS_PART"
-                                    HUBO_CAMBIO=1
-                                fi
-                                printf '%s\n' "$payload_line" >> "$TMP_ITEMS_PART"
-                            elif [[ "$tag" == "A" ]]; then
-                                LIN_ASC="$payload_line"
+                            elif [[ "$tag" == "K" ]]; then
+                                GAN_KEY="${payload_line%%	*}"
+                                GAN_TOPE="${payload_line#*	}"
                             fi
                         done < <(jq -a -r -s \
                             --argjson umb "$UMBRAL_SIM" \
                             --argjson nd "$CAPA_ND" \
-                            --argjson fref "$FACTOR_REFUERZO" \
                             --argjson pini "$PESO_INICIAL" \
-                            --argjson uper "$UMBRAL_PERSISTENTE" \
                             --argjson maxm "$MAX_MEMORIA" \
-                            --argjson ref "$APLICAR_REF" \
-                            --argjson asc "$PUEDE_ASCENDER" '
+                            --argjson ref "$APLICAR_REF" '
                             def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
                             def dot($a; $b): reduce range(0; 1024) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
                             (.[0]) as $q |
@@ -335,39 +415,25 @@ buscar_y_reforzar_capa() {
                                             (dot(.value.embedding; $q) / ($ne * $nq)) as $c_emb |
                                             (if .value.emb_u != null then (dot(.value.emb_u; $q) / (norm(.value.emb_u) * $nq)) else 0 end) as $c_u |
                                             (if $c_u > $c_emb then $c_u else $c_emb end) as $c_max |
-                                            . + {_ne: $ne, _cos: $c_max, _c_emb: $c_emb, _c_u: $c_u, _sim: ($ne * $c_max), _herr: (if $es_herr then 1 else 0 end)}
+                                            {key: .key, fecha: .value.fecha, messages: .value.messages, _ne: $ne, _cos: $c_max, _c_emb: $c_emb, _c_u: $c_u, _sim: ($ne * $c_max), _herr: (if $es_herr then 1 else 0 end)}
                                         else
-                                            . + {_ne: $ne, _cos: 0, _c_emb: 0, _c_u: 0, _sim: 0, _herr: 0}
+                                            empty
                                         end
                                     else
-                                        . + {_ne: 0, _cos: 0, _c_emb: 0, _c_u: 0, _sim: 0, _herr: 0}
+                                        empty
                                     end
                                 ] as $todos |
                                 (
                                     [ $todos[ ] | select(._cos >= $umb and (._herr == 0 or (._c_u < 0.75 and ._c_emb < 0.75))) ] |
                                     sort_by(-._sim)[:($maxm + 1)][ ] |
-                                    "C\t" + ({fecha: .value.fecha, messages: .value.messages, _sim: ._sim, _herr: ._herr} | tojson)
+                                    "C\t" + ({fecha: .fecha, messages: .messages, _sim: ._sim, _herr: ._herr} | tojson)
                                 ),
                                 (
                                     ([ $todos[ ] | select(._cos >= $umb) ] | sort_by(-._sim) | .[0] // null) as $gan |
                                     if ($ref == 1 and $gan != null) then
                                         (if $gan._herr == 1 then $pini else 1.0 end) as $tope |
                                         if ($gan._ne < ($tope - 0.001)) then
-                                            ($gan.value.embedding[:1024] | map(. * $fref)) as $v_ref |
-                                            (norm($v_ref)) as $n_ref |
-                                            (if $n_ref > $tope then $tope else $n_ref end) as $n_fin |
-                                            (
-                                                if $n_ref > $tope then
-                                                    ($v_ref | map((. / $n_ref * $tope * 10000 | round) / 10000))
-                                                else
-                                                    ($v_ref | map((. * 10000 | round) / 10000))
-                                                end
-                                            ) as $emb_fin |
-                                            ($gan.value + {embedding: $emb_fin}) as $gan_act |
-                                            (
-                                                ($todos[ ] | "I\t" + ((if .key == $gan.key then $gan_act else .value end) | tojson)),
-                                                (if ($asc == 1 and $gan._herr == 0 and ((($gan.value.messages[0].content // "") | startswith("<<")) | not) and $n_fin >= $uper) then ("A\t" + ($gan_act | tojson)) else empty end)
-                                            )
+                                            "K\t\($gan.key)\t\($tope)"
                                         else
                                             empty
                                         end
@@ -378,14 +444,48 @@ buscar_y_reforzar_capa() {
                             end
                         ' < <(printf '%s\n' "${VEC_CONSULTA:-null}"; cat "$DIR_MEMORIA/$part") 2>/dev/null)
 
-                        if [[ $HUBO_CAMBIO -eq 1 ]]; then
+                        if [[ -n "$GAN_KEY" ]]; then
+                            TMP_ITEMS_PART="$DIR_MEMORIA/${part}.$$.tmp"
+                            jq -a -c -s \
+                                --argjson gk "$GAN_KEY" \
+                                --argjson tope "$GAN_TOPE" \
+                                --argjson fref "$FACTOR_REFUERZO" '
+                                def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                                to_entries[ ] |
+                                if .key == $gk then
+                                    (.value.embedding[:1024] | map(. * $fref)) as $v_ref |
+                                    (norm($v_ref)) as $n_ref |
+                                    .value + {
+                                        embedding: (
+                                            if $n_ref > $tope then
+                                                ($v_ref | map((. / $n_ref * $tope * 10000 | round) / 10000))
+                                            else
+                                                ($v_ref | map((. * 10000 | round) / 10000))
+                                            end
+                                        )
+                                    }
+                                else
+                                    .value
+                                end
+                            ' "$DIR_MEMORIA/$part" > "$TMP_ITEMS_PART" 2>/dev/null
                             if [[ -s "$TMP_ITEMS_PART" ]]; then
                                 mv -f "$TMP_ITEMS_PART" "$DIR_MEMORIA/$part" 2>/dev/null
+                                if [[ "$PUEDE_ASCENDER" == "1" ]]; then
+                                    LIN_ASC=$(jq -a -c -s --argjson gk "$GAN_KEY" --argjson uper "$UMBRAL_PERSISTENTE" '
+                                        def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                                        (.[$gk] // null) |
+                                        if (. != null and (.herramienta // 0) == 0 and (((.messages[1].content // "") | startswith("[")) | not) and (((.messages[0].content // "") | startswith("<<")) | not) and .embedding != null and norm(.embedding) >= $uper) then
+                                            .
+                                        else
+                                            empty
+                                        end
+                                    ' "$DIR_MEMORIA/$part" 2>/dev/null)
+                                    if [[ -n "$LIN_ASC" ]]; then
+                                        ascender_a_persistente "$LIN_ASC"
+                                    fi
+                                fi
                             else
                                 rm -f "$TMP_ITEMS_PART"
-                            fi
-                            if [[ -n "$LIN_ASC" ]]; then
-                                ascender_a_persistente "$LIN_ASC"
                             fi
                         fi
                     fi
@@ -446,7 +546,22 @@ if [[ "${NUM_REC_PUROS:-0}" -eq 0 ]]; then
     fi
 fi
 
-# Enrutar LoRAs con el vector definitivo (puro o respaldo vectorial)
+# Funcion para cargar o re-enrutar dinamicamente las herramientas segun VEC_CONSULTA actual
+cargar_herramientas() {
+    TEXTO_SPEC="$1"
+    SPECS=""
+    if [[ -d "$DIR_HERRAMIENTAS" ]]; then
+        for ruta in "$DIR_HERRAMIENTAS"/*; do
+            if [[ -f "$ruta" ]]; then
+                SPECS+=$("$ruta" --spec "$TEXTO_SPEC" 2>/dev/null)
+            fi
+        done
+    fi
+    TOOLS_JSON=$(jq -s '.' < <(echo "$SPECS"))
+}
+
+# Enrutar herramientas y LoRAs con el vector definitivo (puro o respaldo vectorial)
+cargar_herramientas "$ENTRADA"
 enrutar_loras
 
 # 2. Cargar Hipocampo real (ultimos $MAX_HIPOCAMPO turnos activos sobre el potencial de disparo, excluyendo lecturas volatiles de herramienta repetidas explicitamente)
@@ -494,22 +609,6 @@ MEMORIA_JSON=$(jq -a -s '
     ) | add // [ ]
 ' < <(echo "$RECUERDOS_TURNOS"; echo "$HIPOCAMPO_TURNOS") 2>/dev/null)
 if [[ -z "$MEMORIA_JSON" ]]; then MEMORIA_JSON="[ ]"; fi
-
-# Funcion para cargar o re-enrutar dinamicamente las herramientas segun VEC_CONSULTA actual
-cargar_herramientas() {
-    TEXTO_SPEC="$1"
-    SPECS=""
-    if [[ -d "$DIR_HERRAMIENTAS" ]]; then
-        for ruta in "$DIR_HERRAMIENTAS"/*; do
-            if [[ -f "$ruta" ]]; then
-                SPECS+=$("$ruta" --spec "$TEXTO_SPEC" 2>/dev/null)
-            fi
-        done
-    fi
-    TOOLS_JSON=$(jq -s '.' < <(echo "$SPECS"))
-}
-
-cargar_herramientas "$ENTRADA"
 
 INSTRUCCIONES_BASE='
 - Responde en Español de forma concisa de tu a tu y con emojis, sin formato latex.
@@ -560,7 +659,9 @@ if [[ "${MODO_INTERNO:-0}" -eq 1 ]]; then
 else
     # Intentos de obtener respuesta
     for (( PASO=1; PASO<=MAX_REINTENTOS; PASO++ )); do
-        JSON_PAYLOAD=$(jq -a --arg sys "$INSTRUCCION_AGENTE" --argjson turno "$MENSAJES_TURNO" --argjson tls "$TOOLS_JSON" --argjson temp "$TEMPERATURA" --argjson rpen "${PENALIZACION_REPETICION:-1.15}" '{
+        FPEN_PASO="0.15"
+        if [[ $PASO -eq 1 ]]; then FPEN_PASO="0.25"; fi
+        JSON_PAYLOAD=$(jq -a --arg sys "$INSTRUCCION_AGENTE" --argjson turno "$MENSAJES_TURNO" --argjson tls "$TOOLS_JSON" --argjson temp "$TEMPERATURA" --argjson rpen "${PENALIZACION_REPETICION:-1.05}" --argjson fpen "$FPEN_PASO" '{
             messages: (
                 [{"role": "system", "content": $sys}] +
                 . +
@@ -570,6 +671,8 @@ else
             tool_choice: "auto",
             temperature: $temp,
             repeat_penalty: $rpen,
+            frequency_penalty: $fpen,
+            max_tokens: 512,
             stop: ["</parameter></parameter>", "<response>"]
         }' < <(echo "$MEMORIA_JSON"))
 
@@ -578,17 +681,20 @@ else
         if [[ -z "$RESPUESTA" ]]; then RESPUESTA="{}"; fi
 
         # Extraer todas las llamadas a herramientas (soporte de tool_calls paralelas)
-        NUM_TOOLS=$(jq -n -r --argjson r "$RESPUESTA" '($r.choices[0].message.tool_calls // [ ]) | length')
+        NUM_TOOLS=$(jq -r '(.choices[0].message.tool_calls // [ ]) | length' < <(printf '%s' "$RESPUESTA") 2>/dev/null)
+        if [[ -z "$NUM_TOOLS" ]]; then NUM_TOOLS=0; fi
 
         if [[ "$NUM_TOOLS" -gt 0 ]]; then
             NUEVAS_EN_PASO=0
             for (( IDX_C=0; IDX_C<NUM_TOOLS; IDX_C++ )); do
-                T_NAME_C=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_C" '$r.choices[0].message.tool_calls[$i].function.name // empty')
-                T_ARGS_C=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_C" '$r.choices[0].message.tool_calls[$i].function.arguments // empty')
+                T_NAME_C=$(jq -r --argjson i "$IDX_C" '.choices[0].message.tool_calls[$i].function.name // empty' < <(printf '%s' "$RESPUESTA") 2>/dev/null)
+                T_ARGS_C=$(jq -r --argjson i "$IDX_C" '.choices[0].message.tool_calls[$i].function.arguments // empty' < <(printf '%s' "$RESPUESTA") 2>/dev/null)
                 M_USADO_C=$(jq -r '.comando // empty' < <(printf '%s' "$T_ARGS_C") 2>/dev/null)
                 M_USADO_C="${M_USADO_C#\# Modulo: }"
                 M_USADO_C="${M_USADO_C#\# modulo: }"
                 M_USADO_C="${M_USADO_C#Modulo: }"
+                M_USADO_C="${M_USADO_C#bash:}"
+                M_USADO_C="${M_USADO_C#bash }"
                 M_USADO_C="${M_USADO_C%% - *}"
                 M_USADO_C="${M_USADO_C%% (*}"
                 if [[ "$ETIQUETAS_TOOLS" != *"[$T_NAME_C:$M_USADO_C]"$'\n'* ]]; then
@@ -599,22 +705,24 @@ else
                 break
             fi
 
-            MSG_LLAMADA=$(jq -n -c --argjson r "$RESPUESTA" '$r.choices[0].message')
-            MENSAJES_TURNO=$(jq -a -c --argjson mcall "$MSG_LLAMADA" '. + [$mcall]' < <(echo "$MENSAJES_TURNO"))
+            MSG_LLAMADA=$(jq -c '.choices[0].message' < <(printf '%s' "$RESPUESTA") 2>/dev/null)
+            MENSAJES_TURNO=$(jq -a -c -s '.[0] + [.[1]]' < <(printf '%s\n%s\n' "$MENSAJES_TURNO" "$MSG_LLAMADA") 2>/dev/null)
             REPETIDO_DETECTADO=0
             ULTIMO_MOD_PASO=""
             ULTIMA_SAL_PASO=""
 
             for (( IDX_T=0; IDX_T<NUM_TOOLS; IDX_T++ )); do
-                TOOL_NAME=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_T" '$r.choices[0].message.tool_calls[$i].function.name // empty')
-                TOOL_ARGS=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_T" '$r.choices[0].message.tool_calls[$i].function.arguments // empty')
+                TOOL_NAME=$(jq -r --argjson i "$IDX_T" '.choices[0].message.tool_calls[$i].function.name // empty' < <(printf '%s' "$RESPUESTA") 2>/dev/null)
+                TOOL_ARGS=$(jq -r --argjson i "$IDX_T" '.choices[0].message.tool_calls[$i].function.arguments // empty' < <(printf '%s' "$RESPUESTA") 2>/dev/null)
                 MODULO_USADO=$(jq -r '.comando // empty' < <(printf '%s' "$TOOL_ARGS") 2>/dev/null)
                 MODULO_USADO="${MODULO_USADO#\# Modulo: }"
                 MODULO_USADO="${MODULO_USADO#\# modulo: }"
                 MODULO_USADO="${MODULO_USADO#Modulo: }"
+                MODULO_USADO="${MODULO_USADO#bash:}"
+                MODULO_USADO="${MODULO_USADO#bash }"
                 MODULO_USADO="${MODULO_USADO%% - *}"
                 MODULO_USADO="${MODULO_USADO%% (*}"
-                TOOL_ID=$(jq -n -r --argjson r "$RESPUESTA" --argjson i "$IDX_T" --arg p "${PASO}_${IDX_T}" '$r.choices[0].message.tool_calls[$i].id // ("call_" + $p)')
+                TOOL_ID=$(jq -r --argjson i "$IDX_T" --arg p "${PASO}_${IDX_T}" '.choices[0].message.tool_calls[$i].id // ("call_" + $p)' < <(printf '%s' "$RESPUESTA") 2>/dev/null)
 
                 FIRMA_LLAMADA="[$TOOL_NAME:$MODULO_USADO]"
                 if [[ "$ETIQUETAS_TOOLS" == *"$FIRMA_LLAMADA"$'\n'* ]]; then
@@ -644,7 +752,7 @@ else
             fi
 
             if [[ $PASO -lt $MAX_REINTENTOS ]]; then
-                if [[ "$ULTIMA_SAL_PASO" == Error:* ]]; then
+                if [[ "$ULTIMA_SAL_PASO" == Error:\ herramienta* ]]; then
                     TEXTO_REENRUTAR="$ENTRADA $ULTIMO_MOD_PASO ${ULTIMA_SAL_PASO:0:120}"
                     TEXTO_REENRUTAR="${TEXTO_REENRUTAR//$'\r'/ }"
                     TEXTO_REENRUTAR="${TEXTO_REENRUTAR//$'\n'/ }"
@@ -664,7 +772,7 @@ else
                 fi
             fi
         else
-            TEXTO_FINAL=$(jq -n -r --argjson r "$RESPUESTA" '($r.choices[0].message.content // "") | gsub("<[^>]*tool_call[^>]*>|</?parameter[^>]*>|<function=[^>]*>|</?response>"; "")')
+            TEXTO_FINAL=$(jq -r '(.choices[0].message.content // "") | gsub("<[^>]*tool_call[^>]*>|</?parameter[^>]*>|<function=[^>]*>|</?response>"; "")' < <(printf '%s' "$RESPUESTA") 2>/dev/null)
             RESPONDI=1
             break
         fi
@@ -677,7 +785,7 @@ if [[ $RESPONDI -eq 0 ]]; then
 $INSTRUCCION_AGENTE
 - Responde ahora con precision en texto plano usando los datos reales verificados por las herramientas, sin emitir etiquetas tool_call ni XML.
 "
-    PAYLOAD_FINAL=$(jq -a --arg sys "$INSTRUCCION_HERRAMIENTAS" --argjson turno "$MENSAJES_TURNO" --argjson temp "$TEMPERATURA" --argjson rpen "${PENALIZACION_REPETICION:-1.15}" '{
+    PAYLOAD_FINAL=$(jq -a --arg sys "$INSTRUCCION_HERRAMIENTAS" --argjson turno "$MENSAJES_TURNO" --argjson temp "$TEMPERATURA" --argjson rpen "${PENALIZACION_REPETICION:-1.05}" '{
         messages: (
             [{"role": "system", "content": $sys}] +
             . +
@@ -685,15 +793,63 @@ $INSTRUCCION_AGENTE
         ),
         temperature: $temp,
         repeat_penalty: $rpen,
+        max_tokens: 512,
         stop: ["<tool_call>", "</tool_call>", "</parameter>", "<function=", "<response>"]
     }' < <(echo "$MEMORIA_JSON"))
 
     RESPUESTA_FINAL=$(curl -s "$URL" -H "Content-Type: application/json" -d "$PAYLOAD_FINAL")
     if [[ -z "$RESPUESTA_FINAL" ]]; then RESPUESTA_FINAL="{}"; fi
-    TEXTO_FINAL=$(jq -n -r --argjson r "$RESPUESTA_FINAL" '($r.choices[0].message.content // "") | gsub("<[^>]*tool_call[^>]*>|</?parameter[^>]*>|<function=[^>]*>|</?response>"; "")')
+    TEXTO_FINAL=$(jq -r '(.choices[0].message.content // "") | gsub("<[^>]*tool_call[^>]*>|</?parameter[^>]*>|<function=[^>]*>|</?response>"; "")' < <(printf '%s' "$RESPUESTA_FINAL") 2>/dev/null)
 fi
 
 if [[ -n "$ETIQUETAS_TOOLS" ]]; then
+    if [[ -n "$TEXTO_FINAL" ]]; then
+        if [[ -n "${ARCH_TRAZA_TOOL:-}" ]]; then
+            TRAZA_JSON=$(jq -a -c --arg txt "$TEXTO_FINAL" '
+                if any(.[ ]; .role == "tool" and (((.content // "") | startswith("BLOQUEADO:")) or ((.content // "") | startswith("Error: herramienta no disponible")))) then
+                    empty
+                else
+                    [
+                        to_entries[ ] |
+                        if (.key == 0 and .value.role == "user") then
+                            {
+                                role: "user",
+                                content: ((.value.content // "") | sub("^\\[[^\\]]+\\] <<[^>]+>> *"; ""))
+                            }
+                        elif (.value.role == "assistant" and .value.tool_calls != null) then
+                            {
+                                role: "assistant",
+                                content: (.value.content // ""),
+                                tool_calls: [
+                                    .value.tool_calls[ ] |
+                                    {
+                                        id: (.id // "call_1"),
+                                        type: (.type // "function"),
+                                        function: {
+                                            name: (.function.name // "bash"),
+                                            arguments: (if (.function.arguments | type) == "string" then .function.arguments else (.function.arguments | tojson) end)
+                                        }
+                                    }
+                                ]
+                            }
+                        elif .value.role == "tool" then
+                            {
+                                role: "tool",
+                                tool_call_id: (.value.tool_call_id // "call_1"),
+                                name: (.value.name // "bash"),
+                                content: (.value.content // "")
+                            }
+                        else
+                            .value
+                        end
+                    ] + [{"role": "assistant", "content": $txt}]
+                end
+            ' < <(printf '%s' "$MENSAJES_TURNO") 2>/dev/null)
+            if [[ -n "$TRAZA_JSON" ]]; then
+                printf '%s\n' "$TRAZA_JSON" > "$ARCH_TRAZA_TOOL" 2>/dev/null
+            fi
+        fi
+    fi
     printf '%s%s\n' "$ETIQUETAS_TOOLS" "$TEXTO_FINAL"
 else
     echo "$TEXTO_FINAL"
