@@ -48,9 +48,11 @@ if [[ $MODO_CONSOLIDAR -eq 1 ]]; then
         IFS= read -r RESPUESTA_UNA_LINEA
         IFS= read -r TS_TURNO
         IFS= read -r HUBO_DESPERTAR
+        IFS= read -r VAL_TURNO
     } < "$ARCH_TURNO_CONSOLIDAR"
     if [[ -z "$TS_TURNO" ]]; then TS_TURNO=$(date +%s); fi
     if [[ -z "$HUBO_DESPERTAR" ]]; then HUBO_DESPERTAR=0; fi
+    if [[ -z "$VAL_TURNO" ]]; then VAL_TURNO=0; fi
 else
     # Cargar entrada
     ENTRADA="$*"
@@ -97,7 +99,12 @@ else
         if ! curl -sf "http://${HOST}:${PUERTO}/health" >/dev/null 2>/dev/null; then
             ACABA_DE_DESPERTAR=1
             echo "..."
-            true < <(setsid "$DIR/DESPERTAR/LENGUAJE" </dev/null >/dev/null 2>/dev/null)
+            NGL_AUTO=""
+            HILOS_AUTO=""
+            if [[ -x "$DIR/DESPERTAR/EQUILIBRIO" ]]; then
+                IFS=$'\t' read -r NGL_AUTO HILOS_AUTO _MEQ _VEQ _PEQ _CEQ < <("$DIR/DESPERTAR/EQUILIBRIO" "$MODELO" "4096" "LENGUAJE" 2>/dev/null)
+            fi
+            true < <(setsid "$DIR/DESPERTAR/LENGUAJE" "$NGL_AUTO" "$HILOS_AUTO" </dev/null >/dev/null 2>/dev/null)
             INTENTO=0
             while [[ $INTENTO -lt 120 ]]; do
                 sleep 0.5
@@ -108,13 +115,37 @@ else
 
         if ! curl -sf "http://${HOST}:${PUERTO_MEMORIA}/health" >/dev/null 2>/dev/null; then
             echo "..."
-            true < <(setsid "$DIR/DESPERTAR/MEMORIA" </dev/null >/dev/null 2>/dev/null)
+            NGL_AUTO=""
+            HILOS_AUTO=""
+            if [[ -x "$DIR/DESPERTAR/EQUILIBRIO" ]]; then
+                IFS=$'\t' read -r NGL_AUTO HILOS_AUTO _MEQ _VEQ _PEQ _CEQ < <("$DIR/DESPERTAR/EQUILIBRIO" "$MODELO_MEMORIA" "512" "MEMORIA" 2>/dev/null)
+            fi
+            true < <(setsid "$DIR/DESPERTAR/MEMORIA" "$NGL_AUTO" "$HILOS_AUTO" </dev/null >/dev/null 2>/dev/null)
             INTENTO=0
             while [[ $INTENTO -lt 120 ]]; do
                 sleep 0.5
                 if curl -sf "http://${HOST}:${PUERTO_MEMORIA}/health" >/dev/null 2>/dev/null; then break; fi
                 INTENTO=$((INTENTO + 1))
             done
+        fi
+
+        if [[ -s "$MODELO_AMIGDALA" ]]; then
+            if [[ -x "$DIR/DESPERTAR/AMIGDALA" ]]; then
+                if ! curl -sf "http://${HOST}:${PUERTO_AMIGDALA}/health" >/dev/null 2>/dev/null; then
+                    NGL_AUTO=""
+                    HILOS_AUTO=""
+                    if [[ -x "$DIR/DESPERTAR/EQUILIBRIO" ]]; then
+                        IFS=$'\t' read -r NGL_AUTO HILOS_AUTO _MEQ _VEQ _PEQ _CEQ < <("$DIR/DESPERTAR/EQUILIBRIO" "$MODELO_AMIGDALA" "1024" "AMIGDALA" 2>/dev/null)
+                    fi
+                    true < <(setsid "$DIR/DESPERTAR/AMIGDALA" "$NGL_AUTO" "$HILOS_AUTO" </dev/null >/dev/null 2>/dev/null)
+                    INTENTO=0
+                    while [[ $INTENTO -lt 40 ]]; do
+                        sleep 0.25
+                        if curl -sf "http://${HOST}:${PUERTO_AMIGDALA}/health" >/dev/null 2>/dev/null; then break; fi
+                        INTENTO=$((INTENTO + 1))
+                    done
+                fi
+            fi
         fi
 
         ABURRIMIENTO_VIVO=0
@@ -175,8 +206,13 @@ else
 
     if [[ $MODO_INTERNO -eq 0 ]]; then
         if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
+            VAL_TURNO="0"
+            if [[ -s "$AMIGDALA" ]]; then
+                VAL_AM=$(jq -r '.ultima_valencia // 0' "$AMIGDALA" 2>/dev/null)
+                if [[ -n "$VAL_AM" ]]; then VAL_TURNO="$VAL_AM"; fi
+            fi
             ARCH_TURNO_TMP="$DIR_REGISTROS/.turno.$$.tmp"
-            printf '%s\n%s\n%s\n%s\n%s\n' "$FECHA_HORA" "$ENTRADA_UNA_LINEA" "$RESPUESTA_UNA_LINEA" "$TS_TURNO" "${ACABA_DE_DESPERTAR:-0}" > "$ARCH_TURNO_TMP"
+            printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$FECHA_HORA" "$ENTRADA_UNA_LINEA" "$RESPUESTA_UNA_LINEA" "$TS_TURNO" "${ACABA_DE_DESPERTAR:-0}" "$VAL_TURNO" > "$ARCH_TURNO_TMP"
             true < <(setsid "$DIR/ENTRADA" --consolidar "$ARCH_TURNO_TMP" "$ARCH_TRAZA_TOOL" </dev/null >/dev/null 2>/dev/null)
         else
             rm -f "$ARCH_TRAZA_TOOL" 2>/dev/null
@@ -457,7 +493,10 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
 
     if [[ "${HUBO_DESPERTAR:-0}" -eq 1 ]]; then
         registrar_en_reloj "despertar" "$FECHA_HORA" "$TS_TURNO" "$ESTIMULO_DESPERTAR" "Me desperte el $FECHA_HORA." "reloj ciclo despertar cuando te despertaste ultimo despertar vigilia $FECHA_HORA"
-        ENTRADA_LIMPIA=$(jq -r -n --arg t "$ENTRADA_UNA_LINEA" '$t | sub("^\\[[^\\]]+\\] <<[^>]+>> *"; "")')
+        ENTRADA_LIMPIA="$ENTRADA_UNA_LINEA"
+        if [[ "$ENTRADA_LIMPIA" == "["*"] <<"*">> "* ]]; then
+            ENTRADA_LIMPIA="${ENTRADA_LIMPIA#*>> }"
+        fi
         if [[ -n "$ENTRADA_LIMPIA" ]]; then
             ENTRADA_UNA_LINEA="$ENTRADA_LIMPIA"
         fi
@@ -470,18 +509,22 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
     RESP_MEM=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAYLOAD_MEM")
     if [[ -z "$RESP_MEM" ]]; then RESP_MEM="{}"; fi
 
-    LINEA_TURNO=$(jq -a -c --arg f "$FECHA_HORA" --argjson ts "$TS_TURNO" --arg u "$ENTRADA_UNA_LINEA" --arg a "$RESPUESTA_UNA_LINEA" --argjson peso "$PESO_INICIAL" '{
-        fecha: $f,
-        ts: $ts,
-        herramienta: (if ($a | startswith("[")) then 1 else 0 end),
-        messages: [
-            {"role": "user", "content": $u},
-            {"role": "assistant", "content": $a}
-        ],
-        embedding: (if (.data and (.data | length) > 0) then (.data[0].embedding | map(((. * $peso) * 10000 | round) / 10000)) else null end),
-        emb_u: (if (.data and (.data | length) > 1) then (.data[1].embedding | map((. * 10000 | round) / 10000)) else null end),
-        emb_a: (if (.data and (.data | length) > 2) then (.data[2].embedding | map((. * 10000 | round) / 10000)) else null end)
-    }' < <(echo "$RESP_MEM"))
+    LINEA_TURNO=$(jq -a -c --arg f "$FECHA_HORA" --argjson ts "$TS_TURNO" --arg u "$ENTRADA_UNA_LINEA" --arg a "$RESPUESTA_UNA_LINEA" --argjson peso "$PESO_INICIAL" --argjson val "${VAL_TURNO:-0}" '
+        (if $val < 0 then ($peso * 0.65) else $peso end) as $p_ef |
+        {
+            fecha: $f,
+            ts: $ts,
+            valencia: $val,
+            herramienta: (if ($a | startswith("[")) then 1 else 0 end),
+            messages: [
+                {"role": "user", "content": $u},
+                {"role": "assistant", "content": $a}
+            ],
+            embedding: (if (.data and (.data | length) > 0) then (.data[0].embedding | map(((. * $p_ef) * 10000 | round) / 10000)) else null end),
+            emb_u: (if (.data and (.data | length) > 1) then (.data[1].embedding | map((. * 10000 | round) / 10000)) else null end),
+            emb_a: (if (.data and (.data | length) > 2) then (.data[2].embedding | map((. * 10000 | round) / 10000)) else null end)
+        }
+    ' < <(echo "$RESP_MEM"))
 
     # Hipocampo sensorial: adjuntar salida real compactada de herramienta SOLO al registro del hipocampo (nunca sube a persistente)
     LINEA_HIPO="$LINEA_TURNO"
@@ -797,10 +840,11 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
         fi
     fi
 
-    # 4. Capa procedimental (trazas reales completas de herramientas: usar + leer, solo para entrenamiento en sueno)
+    # 4. Capa procedimental (trazas reales completas de herramientas: usar + leer, solo para entrenamiento en sueno si valencia >= 0)
     LINEA_PROC=""
     if [[ -n "$ARCH_TRAZA_CONSOLIDAR" ]]; then
         if [[ -s "$ARCH_TRAZA_CONSOLIDAR" ]]; then
+            if [[ "${VAL_TURNO:-0}" -ge 0 ]]; then
             if [[ ! -f "$INDICE_PROCEDIMENTAL" ]]; then > "$INDICE_PROCEDIMENTAL"; fi
             LINEA_PROC=$(jq -a -c -s --arg f "$FECHA_HORA" --argjson peso "$PESO_INICIAL" '
                 def norm($v): ((reduce $v[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
@@ -959,6 +1003,7 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                     printf '%s\n' "$IND_PROC_NUEVO" > "${INDICE_PROCEDIMENTAL}.$$.tmp"
                     mv -f "${INDICE_PROCEDIMENTAL}.$$.tmp" "$INDICE_PROCEDIMENTAL"
                 fi
+            fi
             fi
         fi
     elif [[ $MODO_INTERNO -eq 0 ]]; then

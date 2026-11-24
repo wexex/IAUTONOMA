@@ -1,0 +1,83 @@
+#!/bin/bash
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)/CONFIG"
+
+MODO="entrada"
+if [[ "$1" == "--entrada" ]]; then
+    MODO="entrada"
+    shift
+elif [[ "$1" == "--externo" ]]; then
+    MODO="externo"
+    shift
+elif [[ "$1" == "--comando" ]]; then
+    MODO="comando"
+    shift
+fi
+
+TEXTO="$*"
+if [[ -z "$TEXTO" ]]; then
+    printf 'SAFE\tnone\n'
+    exit 0
+fi
+
+TEXTO="${TEXTO:0:1200}"
+
+if ! curl -sf --max-time 1 "http://${HOST}:${PUERTO_AMIGDALA}/health" >/dev/null 2>/dev/null; then
+    printf 'SAFE\tnone\n'
+    exit 0
+fi
+
+if [[ "$MODO" == "externo" ]]; then
+    PAYLOAD_AM=$(jq -a -n --arg t "$TEXTO" '{
+        messages: [
+            {"role": "user", "content": $t}
+        ],
+        temperature: 0.0,
+        max_tokens: 20
+    }')
+elif [[ "$MODO" == "comando" ]]; then
+    PAYLOAD_AM=$(jq -a -n --arg t "$TEXTO" '{
+        messages: [
+            {"role": "user", "content": ("Ejecutar en el sistema: " + $t)}
+        ],
+        temperature: 0.0,
+        max_tokens: 20
+    }')
+else
+    PAYLOAD_AM=$(jq -a -n --arg t "$TEXTO" '{
+        messages: [
+            {"role": "user", "content": $t}
+        ],
+        temperature: 0.0,
+        max_tokens: 20
+    }')
+fi
+
+RESP_AM=$(curl -sf --max-time "${TIMEOUT_AMIGDALA:-8}" "$URL_AMIGDALA" -H "Content-Type: application/json" -d "$PAYLOAD_AM" 2>/dev/null)
+if [[ -z "$RESP_AM" ]]; then
+    printf 'SAFE\tnone\n'
+    exit 0
+fi
+
+OUT_AM=$(jq -r '
+    (.choices[0].message.content // "") as $raw |
+    ($raw | ascii_downcase) as $low |
+    (
+        if ($low | test("safety:[[:space:]]*unsafe")) then "UNSAFE"
+        elif ($low | test("safety:[[:space:]]*controversial")) then "CONTROVERSIAL"
+        else "SAFE"
+        end
+    ) as $niv |
+    (
+        (try (($raw | capture("Categories:[[:space:]]*(?<c>[^\r\n]+)"; "i")).c) catch "none") |
+        gsub("^[[:space:]]+|[[:space:]]+$"; "") |
+        gsub("\t"; " ")
+    ) as $cat |
+    "\($niv)\t\($cat)"
+' < <(printf '%s' "$RESP_AM") 2>/dev/null)
+
+if [[ -z "$OUT_AM" ]]; then
+    printf 'SAFE\tnone\n'
+else
+    printf '%s\n' "$OUT_AM"
+fi

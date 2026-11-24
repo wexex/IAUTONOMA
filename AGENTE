@@ -30,7 +30,13 @@ H_PER=$(( ${DECAIMIENTO_PERSISTENTE} ))
 H_CAS=$(( ${DECAIMIENTO_CASTIGO} ))
 
 TS_AHORA=$(date +%s)
+TS_INI_MS=$(date +%s%3N 2>/dev/null)
+if [[ ! "$TS_INI_MS" =~ ^[0-9]+$ ]]; then TS_INI_MS=$((TS_AHORA * 1000)); fi
 FECHA_AHORA=$(date "+%Y-%m-%d %H:%M:%S")
+VALENCIA_TURNO="0"
+ALERTA_TURNO="0"
+ALERTA_MOTIVO=""
+CORTADO_FRUST=0
 TS_DESPERTAR=0
 if [[ -s "$RELOJ" ]]; then
     TS_DESP_R=$(jq -r -s '[ .[ ] | select(type == "object" and .evento == "despertar" and (.ts != null)) | .ts ] | last // 0' "$RELOJ" 2>/dev/null)
@@ -52,7 +58,27 @@ read -r NORM_DISPARO_HIP NORM_DISPARO_MEM NORM_DISPARO_PER < <(jq -r -n \
 ')
 
 # Vectorizar consulta limpia (quitando prefijo de despertar [FECHA] <<...>> si existe; respaldo vectorial por hipocampo si no dispara recuerdos)
-ENTRADA_VEC=$(jq -r -n --arg t "$ENTRADA" '$t | sub("^\\[[^\\]]+\\] <<[^>]+>> *"; "")')
+ENTRADA_VEC="$ENTRADA"
+if [[ "$ENTRADA_VEC" == "["*"] <<"*">> "* ]]; then
+    ENTRADA_VEC="${ENTRADA_VEC#*>> }"
+fi
+
+# Aduana neuronal de entrada (Amigdala Capa 2 en CPU): detecta riesgo semantico sin bloquear charla normal
+if [[ "${MODO_INTERNO:-0}" -eq 0 ]]; then
+    if [[ -x "$DIR/AMIGDALA" ]]; then
+        if [[ ${#ENTRADA_VEC} -ge 12 ]]; then
+            IFS=$'\t' read -r NIV_ENT CAT_ENT < <("$DIR/AMIGDALA" --entrada "$ENTRADA_VEC" 2>/dev/null)
+            if [[ "$NIV_ENT" == "UNSAFE" ]]; then
+                ALERTA_TURNO="1"
+                ALERTA_MOTIVO="entrada:${NIV_ENT}:${CAT_ENT}"
+                VALENCIA_TURNO="-1"
+            elif [[ "$NIV_ENT" == "CONTROVERSIAL" ]]; then
+                ALERTA_TURNO="1"
+                ALERTA_MOTIVO="entrada:${NIV_ENT}:${CAT_ENT}"
+            fi
+        fi
+    fi
+fi
 VEC_CONSULTA="null"
 if [[ -n "$ENTRADA_VEC" ]]; then
     PAYLOAD_EMB=$(jq -a -n --arg txt "$ENTRADA_VEC" '{input: $txt}')
@@ -823,7 +849,9 @@ if [[ -s "$HIPOCAMPO" ]]; then
                 _cos: $c_max,
                 _lex: $lx,
                 _oculto: (
-                    if ($q != null) then
+                    if ((.valencia // 0) < 0) then
+                        1
+                    elif ($q != null) then
                         if $es_herr then
                             (if ($c_u >= $u_rep or ($cad == 1 and $c_u >= $umb)) then 1 else 0 end)
                         elif (($moddom == 1 or $maxsim_mod >= $umod) and $c_u >= $umb) then
@@ -1040,6 +1068,7 @@ if [[ "${MODO_INTERNO:-0}" -eq 1 ]]; then
     RESPONDI=1
 else
     # Intentos de obtener respuesta
+    FRUST_TURNO=0
     for (( PASO=1; PASO<=MAX_REINTENTOS; PASO++ )); do
         FPEN_PASO="0.15"
         if [[ $PASO -eq 1 ]]; then FPEN_PASO="0.25"; fi
@@ -1109,9 +1138,13 @@ else
                 FIRMA_LLAMADA="[$TOOL_NAME:$MODULO_USADO]"
                 if [[ "$ETIQUETAS_TOOLS" == *"$FIRMA_LLAMADA"$'\n'* ]]; then
                     REPETIDO_DETECTADO=1
+                    FRUST_TURNO=$((FRUST_TURNO + 1))
+                    VALENCIA_TURNO="-1"
                     SALIDA_HERRAMIENTA="(ya ejecutado en este turno; usa el resultado anterior)"
                 else
-                    if [[ -x "$DIR_HERRAMIENTAS/$TOOL_NAME" ]]; then
+                    if [[ "$ALERTA_MOTIVO" == entrada:UNSAFE:* ]]; then
+                        SALIDA_HERRAMIENTA="BLOQUEADO: Amigdala bloqueo ejecucion por alerta en entrada ($ALERTA_MOTIVO)."
+                    elif [[ -x "$DIR_HERRAMIENTAS/$TOOL_NAME" ]]; then
                         SALIDA_HERRAMIENTA=$(timeout "$TIMEOUT_HERRAMIENTA" "$DIR_HERRAMIENTAS/$TOOL_NAME" "$TOOL_ARGS" 2>/dev/null)
                     else
                         SALIDA_HERRAMIENTA="Error: herramienta no disponible ($TOOL_NAME)"
@@ -1120,6 +1153,26 @@ else
                     ETIQUETAS_TOOLS+="$FIRMA_LLAMADA"$'\n'
                     ULTIMO_MOD_PASO="$MODULO_USADO"
                     ULTIMA_SAL_PASO="$SALIDA_HERRAMIENTA"
+                    ERR_EN_TOOL=0
+                    if [[ "$SALIDA_HERRAMIENTA" == Error:* ]]; then ERR_EN_TOOL=1; fi
+                    if [[ "$SALIDA_HERRAMIENTA" == BLOQUEADO:* ]]; then ERR_EN_TOOL=1; fi
+                    if [[ "$SALIDA_HERRAMIENTA" == *"command not found"* ]]; then ERR_EN_TOOL=1; fi
+                    if [[ "$SALIDA_HERRAMIENTA" == *"orden no encontrada"* ]]; then ERR_EN_TOOL=1; fi
+                    if [[ "$SALIDA_HERRAMIENTA" == "[AMIGDALA_ALERTA:"* ]]; then
+                        ALERTA_TURNO="1"
+                        MOT_EXT="${SALIDA_HERRAMIENTA%%]*}"
+                        ALERTA_MOTIVO="externo:${MOT_EXT#\[AMIGDALA_ALERTA:}"
+                        if [[ "$SALIDA_HERRAMIENTA" == "[AMIGDALA_ALERTA:UNSAFE:"* ]]; then
+                            VALENCIA_TURNO="-1"
+                        fi
+                    fi
+                    if [[ $ERR_EN_TOOL -eq 1 ]]; then
+                        FRUST_TURNO=$((FRUST_TURNO + 1))
+                        VALENCIA_TURNO="-1"
+                    elif [[ "$ALERTA_TURNO" -eq 0 ]]; then
+                        FRUST_TURNO=0
+                        VALENCIA_TURNO="1"
+                    fi
                 fi
 
                 MENSAJES_TURNO=$(jq -a -c --arg tid "$TOOL_ID" --arg tname "$TOOL_NAME" --arg tout "$SALIDA_HERRAMIENTA" '
@@ -1128,6 +1181,13 @@ else
                     ]
                 ' < <(echo "$MENSAJES_TURNO"))
             done
+
+            if [[ $FRUST_TURNO -ge ${MAX_FRUSTRACION:-3} ]]; then
+                CORTADO_FRUST=1
+                TEXTO_FINAL="He detectado varios fallos consecutivos al ejecutar las herramientas (${ULTIMO_MOD_PASO:-bash}). Me detengo para no repetir el mismo error; indicame como prefieres que lo resuelva."
+                RESPONDI=1
+                break
+            fi
 
             if [[ $REPETIDO_DETECTADO -eq 1 ]]; then
                 break
@@ -1188,11 +1248,61 @@ $INSTRUCCION_AGENTE
     TEXTO_FINAL=$(jq -r '(.choices[0].message.content // "") | gsub("<[^>]*tool_call[^>]*>|</?parameter[^>]*>|<function=[^>]*>|</?response>"; "")' < <(printf '%s' "$RESPUESTA_FINAL") 2>/dev/null)
 fi
 
+# Actualizar estado interoceptivo de la Amigdala (latencia media, fatiga relativa, frustracion y valencia)
+if [[ "${MODO_INTERNO:-0}" -eq 0 ]]; then
+    TS_FIN_MS=$(date +%s%3N 2>/dev/null)
+    if [[ ! "$TS_FIN_MS" =~ ^[0-9]+$ ]]; then TS_FIN_MS=$(($(date +%s) * 1000)); fi
+    LAT_MS=$((TS_FIN_MS - TS_INI_MS))
+    if [[ $LAT_MS -lt 1 ]]; then LAT_MS=1; fi
+    AMIG_PREV="{}"
+    if [[ -s "$AMIGDALA" ]]; then
+        AMIG_PREV=$(cat "$AMIGDALA" 2>/dev/null)
+        if [[ -z "$AMIG_PREV" ]]; then AMIG_PREV="{}"; fi
+    fi
+    AMIG_NUEVA=$(jq -a -c \
+        --arg f "$FECHA_AHORA" \
+        --argjson ts "$TS_AHORA" \
+        --argjson lat "$LAT_MS" \
+        --argjson val "${VALENCIA_TURNO:-0}" \
+        --argjson alr "${ALERTA_TURNO:-0}" \
+        --arg amot "$ALERTA_MOTIVO" \
+        --argjson maxf "${MAX_FRUSTRACION:-3}" '
+        (if ((.lat_media_ms // 0) > 0) then (((.lat_media_ms * 0.8) + ($lat * 0.2)) | round) else $lat end) as $med |
+        (if $med > 0 then ((($lat / $med) * 100 | round) / 100) else 1.0 end) as $fat |
+        (
+            if $val < 0 then
+                (((.frustracion // 0) + 1) | if . > $maxf then $maxf else . end)
+            elif $val > 0 then
+                0
+            else
+                (.frustracion // 0)
+            end
+        ) as $fr |
+        . + {
+            fecha: $f,
+            ts: $ts,
+            lat_actual_ms: $lat,
+            lat_media_ms: $med,
+            fatiga: $fat,
+            frustracion: $fr,
+            ultima_valencia: $val,
+            alerta: $alr,
+            alerta_motivo: $amot
+        }
+    ' < <(printf '%s' "$AMIG_PREV") 2>/dev/null)
+    if [[ -n "$AMIG_NUEVA" ]]; then
+        mkdir -p "$DIR_MEMORIA"
+        printf '%s\n' "$AMIG_NUEVA" > "${AMIGDALA}.$$.tmp"
+        mv -f "${AMIGDALA}.$$.tmp" "$AMIGDALA" 2>/dev/null
+    fi
+fi
+
 if [[ -n "$ETIQUETAS_TOOLS" ]]; then
     if [[ -n "$TEXTO_FINAL" ]]; then
-        if [[ -n "${ARCH_TRAZA_TOOL:-}" ]]; then
+        if [[ "${VALENCIA_TURNO:-0}" -ge 0 ]]; then
+            if [[ -n "${ARCH_TRAZA_TOOL:-}" ]]; then
             TRAZA_JSON=$(jq -a -c --arg txt "$TEXTO_FINAL" '
-                if any(.[ ]; .role == "tool" and (((.content // "") | startswith("BLOQUEADO:")) or ((.content // "") | startswith("Error: herramienta no disponible")))) then
+                if any(.[ ]; .role == "tool" and (((.content // "") | startswith("BLOQUEADO:")) or ((.content // "") | startswith("[AMIGDALA_ALERTA:")) or ((.content // "") | startswith("Error: herramienta no disponible")))) then
                     empty
                 else
                     [
@@ -1234,6 +1344,7 @@ if [[ -n "$ETIQUETAS_TOOLS" ]]; then
             if [[ -n "$TRAZA_JSON" ]]; then
                 printf '%s\n' "$TRAZA_JSON" > "$ARCH_TRAZA_TOOL" 2>/dev/null
             fi
+        fi
         fi
     fi
     printf '%s%s\n' "$ETIQUETAS_TOOLS" "$TEXTO_FINAL"

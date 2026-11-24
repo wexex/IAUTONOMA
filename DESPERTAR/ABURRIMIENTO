@@ -129,6 +129,7 @@ while true; do
             if [[ $REFLEJO_OK -eq 1 ]]; then
                 dormir_puerto "$PUERTO"
                 dormir_puerto "$PUERTO_MEMORIA"
+                dormir_puerto "$PUERTO_AMIGDALA"
                 rm -f "$PID_ABURRIMIENTO" "$SENAL_DESPERTAR" 2>/dev/null
                 if [[ -x "$DIR/DESPERTAR/DORMIR" ]]; then
                     true < <(setsid "$DIR/DESPERTAR/DORMIR" </dev/null >/dev/null 2>/dev/null)

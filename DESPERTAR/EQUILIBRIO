@@ -1,0 +1,140 @@
+#!/bin/bash
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/CONFIG"
+
+ARCH_MOD="$1"
+CTX_MOD="${2:-1024}"
+NOM_SERV="${3:-modelo}"
+
+CORES=2
+if command -v nproc >/dev/null 2>/dev/null; then
+    C_DET=$(nproc 2>/dev/null)
+    if [[ "$C_DET" =~ ^[0-9]+$ ]]; then
+        if [[ "$C_DET" -gt 0 ]]; then CORES="$C_DET"; fi
+    fi
+fi
+
+if [[ ! -s "$ARCH_MOD" ]]; then
+    printf '0\t%s\tRAM\t0\t0\t0\n' "$CORES"
+    exit 0
+fi
+
+BYTES_MOD=$(stat -c %s "$ARCH_MOD" 2>/dev/null)
+if [[ ! "$BYTES_MOD" =~ ^[0-9]+$ ]]; then
+    BYTES_MOD=$(wc -c < "$ARCH_MOD" 2>/dev/null)
+    BYTES_MOD="${BYTES_MOD// /}"
+fi
+if [[ ! "$BYTES_MOD" =~ ^[0-9]+$ ]]; then BYTES_MOD=0; fi
+PESO_MB=$(( BYTES_MOD / 1048576 ))
+if [[ $PESO_MB -lt 1 ]]; then PESO_MB=1; fi
+
+# Leer numero real de capas (block_count) directamente de la cabecera GGUF
+CAPAS=0
+OFF_LINE=$(grep -m 1 -abo "block_count" < <(head -c 65536 "$ARCH_MOD") 2>/dev/null)
+OFF="${OFF_LINE%%:*}"
+if [[ "$OFF" =~ ^[0-9]+$ ]]; then
+    VAL_CAP=$(od -An -t u4 -j $((OFF + 15)) -N 4 "$ARCH_MOD" 2>/dev/null)
+    VAL_CAP="${VAL_CAP// /}"
+    VAL_CAP="${VAL_CAP//$'\n'/}"
+    VAL_CAP="${VAL_CAP//$'\r'/}"
+    if [[ "$VAL_CAP" =~ ^[0-9]+$ ]]; then
+        if [[ "$VAL_CAP" -ge 4 ]]; then
+            if [[ "$VAL_CAP" -le 128 ]]; then
+                CAPAS="$VAL_CAP"
+            fi
+        fi
+    fi
+fi
+if [[ $CAPAS -eq 0 ]]; then
+    CAPAS=$(( 20 + (PESO_MB / 180) ))
+    if [[ $CAPAS -gt 64 ]]; then CAPAS=64; fi
+fi
+
+# Medir VRAM total y libre real en tiempo de ejecucion
+VRAM_TOT=0
+VRAM_LIB=0
+SMI_BIN=""
+if command -v nvidia-smi >/dev/null 2>/dev/null; then
+    SMI_BIN="nvidia-smi"
+elif [[ -x "/c/Windows/System32/nvidia-smi.exe" ]]; then
+    SMI_BIN="/c/Windows/System32/nvidia-smi.exe"
+elif [[ -x "/c/Program Files/NVIDIA Corporation/NVSMI/nvidia-smi.exe" ]]; then
+    SMI_BIN="/c/Program Files/NVIDIA Corporation/NVSMI/nvidia-smi.exe"
+fi
+if [[ -n "$SMI_BIN" ]]; then
+    SMI_OUT=$("$SMI_BIN" --query-gpu=memory.total,memory.free --format=csv,noheader,nounits 2>/dev/null)
+    SMI_OUT="${SMI_OUT%%$'\n'*}"
+    SMI_OUT="${SMI_OUT//$'\r'/}"
+    SMI_OUT="${SMI_OUT// /}"
+    V_TOT="${SMI_OUT%%,*}"
+    V_LIB="${SMI_OUT#*,}"
+    if [[ "$V_TOT" =~ ^[0-9]+$ ]]; then VRAM_TOT="$V_TOT"; fi
+    if [[ "$V_LIB" =~ ^[0-9]+$ ]]; then VRAM_LIB="$V_LIB"; fi
+fi
+
+# Medir RAM disponible (en MiB, informativo y para proteger sistema si RAM va justa)
+RAM_LIB=0
+if [[ -r /proc/meminfo ]]; then
+    R_DET=$(awk '/MemAvailable:/ {printf "%d", $2/1024; exit}' /proc/meminfo 2>/dev/null)
+    if [[ -z "$R_DET" ]]; then
+        R_DET=$(awk '/MemFree:/ {printf "%d", $2/1024; exit}' /proc/meminfo 2>/dev/null)
+    fi
+    if [[ "$R_DET" =~ ^[0-9]+$ ]]; then RAM_LIB="$R_DET"; fi
+fi
+
+IFS=$'\t' read -r NGL HILOS MODO_EQ < <(jq -r -n \
+    --argjson vtot "$VRAM_TOT" \
+    --argjson vlib "$VRAM_LIB" \
+    --argjson peso "$PESO_MB" \
+    --argjson ctx "$CTX_MOD" \
+    --argjson capas "$CAPAS" \
+    --argjson cores "$CORES" '
+    (if $vtot > 0 then ([320, (($vtot * 0.10) | floor)] | max) else 0 end) as $res |
+    (($ctx * 0.08) | floor) as $ctx_mb |
+    (($peso * 1.15) | floor) as $peso_real |
+    ($vlib - $res) as $util |
+    (
+        if ($vtot <= 0 or $util <= ($ctx_mb + 120)) then
+            0
+        elif $util >= ($peso_real + $ctx_mb) then
+            99
+        else
+            (((($util - $ctx_mb) / $peso_real) * $capas) | floor) as $calc |
+            if $calc < 1 then 0
+            elif $calc >= $capas then 99
+            else $calc end
+        end
+    ) as $ngl |
+    (
+        if $ngl >= 99 then
+            ([1, (($cores / 2) | floor)] | max)
+        elif $ngl > 0 then
+            ([1, ($cores - 1)] | max)
+        else
+            $cores
+        end
+    ) as $hilos |
+    (
+        if $ngl >= 99 then "GPU"
+        elif $ngl > 0 then "HIBRIDO"
+        else "RAM" end
+    ) as $modo |
+    "\($ngl)\t\($hilos)\t\($modo)"
+' 2>/dev/null)
+
+if [[ -z "$NGL" ]]; then NGL=0; fi
+if [[ -z "$HILOS" ]]; then HILOS="$CORES"; fi
+if [[ -z "$MODO_EQ" ]]; then MODO_EQ="RAM"; fi
+
+mkdir -p "$DIR_REGISTROS"
+LOG_EQ="$DIR_REGISTROS/equilibrio.log"
+if [[ -f "$LOG_EQ" ]]; then
+    if [[ $(wc -l < "$LOG_EQ") -ge 200 ]]; then
+        tail -n 100 "$LOG_EQ" > "${LOG_EQ}.tmp"
+        mv -f "${LOG_EQ}.tmp" "$LOG_EQ" 2>/dev/null
+    fi
+fi
+printf '[%s] %s | modo=%s | ngl=%s/%s | hilos=%s | peso=%sMiB | ctx=%s | vram_libre=%s/%sMiB | ram_libre=%sMiB\n' \
+    "$(date "+%Y-%m-%d %H:%M:%S")" "$NOM_SERV" "$MODO_EQ" "$NGL" "$CAPAS" "$HILOS" "$PESO_MB" "$CTX_MOD" "$VRAM_LIB" "$VRAM_TOT" "$RAM_LIB" >> "$LOG_EQ"
+
+printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$NGL" "$HILOS" "$MODO_EQ" "$VRAM_LIB" "$PESO_MB" "$CAPAS"

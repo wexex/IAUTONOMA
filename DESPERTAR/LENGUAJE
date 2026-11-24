@@ -32,6 +32,16 @@ if [[ -d "$DIR_LORA_PESOS" ]]; then
     fi
 fi
 
+NGL_LEN="$1"
+HILOS_LEN="$2"
+if [[ -z "$NGL_LEN" ]]; then
+    if [[ -x "$DIR/DESPERTAR/EQUILIBRIO" ]]; then
+        IFS=$'\t' read -r NGL_LEN HILOS_LEN _MODO_L _VL_L _PM_L _CP_L < <("$DIR/DESPERTAR/EQUILIBRIO" "$MODELO" "4096" "LENGUAJE" 2>/dev/null)
+    fi
+fi
+if [[ -z "$NGL_LEN" ]]; then NGL_LEN="99"; fi
+if [[ -z "$HILOS_LEN" ]]; then HILOS_LEN="2"; fi
+
 llama-server \
 -m "$MODELO" \
 "${ARGS_LORA[@]}" \
@@ -39,7 +49,8 @@ llama-server \
 --port "$PUERTO" \
 -c 4096 -n \
 2048 -np 1 \
---jinja -ngl 99 \
+--jinja -ngl "$NGL_LEN" \
+-t "$HILOS_LEN" \
 --reasoning off \
 -fa on \
 -ctk q8_0 \

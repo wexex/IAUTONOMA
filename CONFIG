@@ -22,6 +22,12 @@ PUERTO_MEMORIA="8082"
 URL_MEMORIA="http://${HOST}:${PUERTO_MEMORIA}/v1/embeddings"
 MODELO_MEMORIA="$DIR/../MODELO/Qwen3-Embedding-0.6B-Q8_0.gguf"
 
+# Amigdala neuronal (aduana de seguridad y contenido externo en CPU)
+PUERTO_AMIGDALA="8083"
+URL_AMIGDALA="http://${HOST}:${PUERTO_AMIGDALA}/v1/chat/completions"
+MODELO_AMIGDALA="$DIR/../MODELO/Qwen3Guard-Gen-0.6B-Q4_K_M.gguf"
+TIMEOUT_AMIGDALA="8"
+
 # Umbrales de similitud por capa (memoria, modulos, margen y refuerzo persistente)
 UMBRAL_SIM="0.52"
 UMBRAL_MODULO="0.55"
@@ -53,6 +59,8 @@ DIR_REGISTROS="$DIR/REGISTROS"
 # Hipocampo (momento presente), Reloj (ciclo biologico), Episodica (1 semana), Persistente (1 anio) y Procedimental (herramientas para sueno)
 HIPOCAMPO="$DIR_MEMORIA/hipocampo.json"
 RELOJ="$DIR_MEMORIA/reloj.json"
+AMIGDALA="$DIR_MEMORIA/amigdala.json"
+MAX_FRUSTRACION="3"
 MAX_HILO="2"
 MAX_HIPOCAMPO="3"
 MAX_RELOJ="2"

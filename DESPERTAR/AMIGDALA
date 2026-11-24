@@ -1,0 +1,23 @@
+#!/bin/bash
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/CONFIG"
+
+NGL_AM="$1"
+HILOS_AM="$2"
+if [[ -z "$NGL_AM" ]]; then
+    if [[ -x "$DIR/DESPERTAR/EQUILIBRIO" ]]; then
+        IFS=$'\t' read -r NGL_AM HILOS_AM _MODO_A _VL_A _PM_A _CP_A < <("$DIR/DESPERTAR/EQUILIBRIO" "$MODELO_AMIGDALA" "1024" "AMIGDALA" 2>/dev/null)
+    fi
+fi
+if [[ -z "$NGL_AM" ]]; then NGL_AM="0"; fi
+if [[ -z "$HILOS_AM" ]]; then HILOS_AM="2"; fi
+
+llama-server \
+-m "$MODELO_AMIGDALA" \
+--host "$HOST" \
+--port "$PUERTO_AMIGDALA" \
+-c 1024 \
+-ngl "$NGL_AM" \
+-t "$HILOS_AM" \
+-lm none \
+--no-host

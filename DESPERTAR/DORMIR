@@ -71,6 +71,7 @@ dormir_puerto() {
 apagar_servidores() {
     dormir_puerto "$PUERTO"
     dormir_puerto "$PUERTO_MEMORIA"
+    dormir_puerto "$PUERTO_AMIGDALA"
 }
 
 REM_ACTIVO=0
@@ -297,6 +298,9 @@ fase_ligero() {
             for pe in "${PARTS_EN_CURSO[@]}"; do
                 if [[ "$pe" == "$BASE_P" ]]; then EN_CURSO=1; fi
             done
+            for pf_f in "${PARTS_FALLIDAS[@]}"; do
+                if [[ "$pf_f" == "$BASE_P" ]]; then EN_CURSO=1; fi
+            done
             if [[ $EN_CURSO -eq 0 ]]; then
                 VALIDOS_P=$(jq -r -s '
                     [
@@ -328,6 +332,9 @@ fase_ligero() {
             EN_CURSO=0
             for pe in "${PARTS_EN_CURSO[@]}"; do
                 if [[ "$pe" == "$BASE_P" ]]; then EN_CURSO=1; fi
+            done
+            for pf_f in "${PARTS_FALLIDAS[@]}"; do
+                if [[ "$pf_f" == "$BASE_P" ]]; then EN_CURSO=1; fi
             done
             if [[ $EN_CURSO -eq 0 ]]; then
                 VALIDOS_H=$(jq -r -s '
@@ -1364,7 +1371,10 @@ fase_rem() {
                             purgar_lora_obsoleto "$NOM_T"
                             registrar_sueno "[REM] Tope de ciclos ($MAX_CICLOS_REM) en rectificacion de $NOM_T sin aprobados -> LoRA obsoleto purgado."
                         else
-                            registrar_sueno "[REM] Tope de ciclos ($MAX_CICLOS_REM) en $NOM_T sin aprobados -> Conservado estado previo sin sobrescribir."
+                            if [[ -n "$PART_ORIG" ]]; then
+                                PARTS_FALLIDAS+=("$PART_ORIG")
+                            fi
+                            registrar_sueno "[REM] Tope de ciclos ($MAX_CICLOS_REM) en $NOM_T sin aprobados -> Conservado estado previo sin sobrescribir (particion $PART_ORIG omitida esta sesion)."
                             rm -rf "$DIR_T"
                         fi
                     elif [[ "$MEJORO" -eq 1 ]]; then
@@ -1408,6 +1418,7 @@ fase_rem() {
 }
 
 # Bucle principal de ciclos de sueno (Ligero prepara -> Profundo entrena -> REM testea, en round-robin)
+PARTS_FALLIDAS=( )
 registrar_sueno "=== INICIO DE SUENO (PID=$$, modelo=$NOMBRE_IA) ==="
 
 while true; do
@@ -1441,6 +1452,7 @@ while true; do
     fi
 
     FASE_ACTUAL=$(jq -r '.fase // "profundo"' "$DIR_SUENO/$TAREA_ELEGIDA/estado.json" 2>/dev/null)
+    T_CICLO_INI=$(date +%s)
 
     if [[ "$FASE_ACTUAL" == "profundo" ]]; then
         PROFUNDO_RC=0
@@ -1457,6 +1469,38 @@ while true; do
         fase_rem "$TAREA_ELEGIDA"
         if [[ $REM_PAUSADO -eq 1 ]]; then
             break
+        fi
+    fi
+
+    # Interocepcion de fatiga intrinseca en sueno: si un ciclo tarda >= 2x su media previa, pausa de descanso sin sensores externos
+    T_CICLO_FIN=$(date +%s)
+    DUR_CICLO=$((T_CICLO_FIN - T_CICLO_INI))
+    if [[ $DUR_CICLO -gt 10 ]]; then
+        AMIG_S="{}"
+        if [[ -s "$AMIGDALA" ]]; then
+            AMIG_S=$(cat "$AMIGDALA" 2>/dev/null)
+            if [[ -z "$AMIG_S" ]]; then AMIG_S="{}"; fi
+        fi
+        IFS=$'\t' read -r FAT_SUENO AMIG_S_NUEVA < <(jq -r -c --argjson dur "$DUR_CICLO" '
+            (.sueno_media_s // 0) as $prev |
+            (if $prev > 0 then ((($prev * 0.8) + ($dur * 0.2)) | round) else $dur end) as $med |
+            (if ($prev > 0 and $dur >= ($prev * 2)) then 1 else 0 end) as $fat |
+            "\($fat)\t" + ((. + {sueno_ultimo_s: $dur, sueno_media_s: $med}) | tojson)
+        ' < <(printf '%s' "$AMIG_S") 2>/dev/null)
+        if [[ -n "$AMIG_S_NUEVA" ]]; then
+            mkdir -p "$DIR_MEMORIA"
+            printf '%s\n' "$AMIG_S_NUEVA" > "${AMIGDALA}.$$.tmp"
+            mv -f "${AMIGDALA}.$$.tmp" "$AMIGDALA" 2>/dev/null
+        fi
+        if [[ "${FAT_SUENO:-0}" -eq 1 ]]; then
+            registrar_sueno "[AMIGDALA/FATIGA] Ciclo lento (${DUR_CICLO}s >= 2x media). Pausa de descanso 10s..."
+            P_FAT=0
+            while [[ $P_FAT -lt 5 ]]; do
+                sleep 2
+                comprobar_despertar
+                if [[ $DESPERTO -eq 1 ]]; then break; fi
+                P_FAT=$((P_FAT + 1))
+            done
         fi
     fi
 

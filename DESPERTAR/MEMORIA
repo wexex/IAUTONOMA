@@ -2,13 +2,24 @@
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/CONFIG"
 
+NGL_MEM="$1"
+HILOS_MEM="$2"
+if [[ -z "$NGL_MEM" ]]; then
+    if [[ -x "$DIR/DESPERTAR/EQUILIBRIO" ]]; then
+        IFS=$'\t' read -r NGL_MEM HILOS_MEM _MODO_M _VL_M _PM_M _CP_M < <("$DIR/DESPERTAR/EQUILIBRIO" "$MODELO_MEMORIA" "512" "MEMORIA" 2>/dev/null)
+    fi
+fi
+if [[ -z "$NGL_MEM" ]]; then NGL_MEM="0"; fi
+if [[ -z "$HILOS_MEM" ]]; then HILOS_MEM="2"; fi
+
 llama-server \
 -m "$MODELO_MEMORIA" \
 --host "$HOST" \
 --port "$PUERTO_MEMORIA" \
 -c 512 \
 --embedding \
--ngl 0 \
+-ngl "$NGL_MEM" \
+-t "$HILOS_MEM" \
 -cram 0 \
 -lm none \
 --no-host
