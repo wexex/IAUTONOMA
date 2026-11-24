@@ -33,6 +33,11 @@ registrar_sueno() {
     rotar_log "$LOG_SUENO"
 }
 
+registrar_historial_sueno() {
+    printf '[%s] %s\n' "$(date "+%Y-%m-%d %H:%M:%S")" "$1" >> "$HISTORIAL_SUENO"
+    rotar_log "$HISTORIAL_SUENO"
+}
+
 registrar_reloj_sueno() {
     RES_REL="$1"
     F_RS=$(date "+%Y-%m-%d %H:%M:%S")
@@ -374,6 +379,7 @@ fase_ligero() {
             FASE_PRE=$(jq -r '.fase // "profundo"' "$DIR_TAREA/estado.json" 2>/dev/null)
             CICLO_PRE=$(jq -r '.ciclo // 0' "$DIR_TAREA/estado.json" 2>/dev/null)
             registrar_sueno "[N1/N2 LIGERO] Reanudando $TAREA_ELEGIDA (clase=$CLASE_SEL, fase=$FASE_PRE, ciclo=$CICLO_PRE)."
+            registrar_historial_sueno "Reanudo el sueno $TAREA_ELEGIDA ($CLASE_SEL) desde la fase $FASE_PRE (ciclo $CICLO_PRE)."
         else
             PREF_NOM="sueno_"
             if [[ "$CLASE_SEL" == "procedimental" ]]; then
@@ -741,10 +747,13 @@ fase_ligero() {
                 reset_lr: 0
             }' > "$DIR_TAREA/estado.json"
 
+            TEMAS_RES=$(jq -r -s '[ .[ ] | (.u // "") | gsub("[\r\n]+"; " ") | .[0:45] ][:4] | join(" ; ")' "$DIR_TAREA/origen.json" 2>/dev/null)
             if [[ $ES_FUSION -eq 1 ]]; then
                 registrar_sueno "[N1/N2 LIGERO] Fusion preparada en $TAREA_ELEGIDA (clase=$CLASE_SEL ; $LINEAS_FUSION previos + $NUM_NUEVOS nuevos de $PART_ELEGIDA = $NUM_EJ total ; epocas_iniciales=$EP_INIT)."
+                registrar_historial_sueno "Amplio el sueno $TAREA_ELEGIDA ($CLASE_SEL): sumo $NUM_NUEVOS recuerdos nuevos ($NUM_EJ en total) sobre: $TEMAS_RES."
             else
                 registrar_sueno "[N1/N2 LIGERO] Nueva particion preparada $TAREA_ELEGIDA (clase=$CLASE_SEL ; $NUM_EJ recuerdos desde $PART_ELEGIDA ; max=$MAX_LORA ; epocas_iniciales=$EP_INIT)."
+                registrar_historial_sueno "Empiezo a sonar con $TAREA_ELEGIDA ($NUM_EJ recuerdos de tipo $CLASE_SEL): $TEMAS_RES."
             fi
 
             MODO_REG_L="nueva"
@@ -852,6 +861,7 @@ fase_profundo() {
 
         if [[ $PROFUNDO_RC -eq 42 ]]; then
             registrar_sueno "[N3 PROFUNDO] Pausado en checkpoint por despertar del usuario ($NOM_T)."
+            registrar_historial_sueno "Me despertaste mientras sonaba con $NOM_T; guarde el punto exacto para seguir mas tarde."
         elif [[ $PROFUNDO_RC -eq 0 ]]; then
             EST_NUEVO=$(jq -a -c '. + {fase: "rem", reset_lr: 0}' "$EST_F" 2>/dev/null)
             printf '%s\n' "$EST_NUEVO" > "${EST_F}.tmp"
@@ -1230,9 +1240,11 @@ fase_rem() {
                                     if [[ $ES_ACIERTO -eq 1 ]]; then
                                         printf '%s\n' "$PREG_R" >> "$APROB_TMP"
                                         registrar_sueno "[REM-HERR] OK  uso=1 ($MOD_PRED==$MOD_ESP) ; sim=$SIM_VAL ; Q=${PREG_R:0:40} ; A=${TXT_REM:0:55}"
+                                        registrar_historial_sueno "  [OK] Sone con \"${PREG_R:0:60}\" -> use bien $MOD_PRED y respondi: \"${TXT_REM:0:80}\" (sim=${SIM_VAL:0:4})."
                                     else
                                         NUM_ERRORES=$((NUM_ERRORES + 1))
                                         registrar_sueno "[REM-HERR] ERR uso=$OK_USO (pred=$MOD_PRED esp=$MOD_ESP) ; sim=$SIM_VAL ; Q=${PREG_R:0:40} ; A=${TXT_REM:0:55}"
+                                        registrar_historial_sueno "  [REPITE] Sone con \"${PREG_R:0:60}\" -> falle (use ${MOD_PRED:-nada}, debia usar $MOD_ESP; sim=${SIM_VAL:0:4})."
                                     fi
                                 fi
                             fi
@@ -1293,9 +1305,11 @@ fase_rem() {
                                 if [[ "$ES_ACIERTO" -eq 1 ]]; then
                                     printf '%s\n' "$PREG_R" >> "$APROB_TMP"
                                     registrar_sueno "[REM]   OK   sim=$SIM_VAL ; Q=${PREG_R:0:45} ; A=${TXT_REM:0:60}"
+                                    registrar_historial_sueno "  [OK] Sone con \"${PREG_R:0:60}\" -> recorde bien: \"${TXT_REM:0:80}\" (sim=${SIM_VAL:0:4})."
                                 else
                                     NUM_ERRORES=$((NUM_ERRORES + 1))
                                     registrar_sueno "[REM]   ERR  sim=$SIM_VAL ; Q=${PREG_R:0:45} ; A=${TXT_REM:0:60}"
+                                    registrar_historial_sueno "  [REPITE] Sone con \"${PREG_R:0:60}\" -> aun no lo fije bien (sim=${SIM_VAL:0:4})."
                                 fi
                             fi
                         fi
@@ -1347,6 +1361,7 @@ fase_rem() {
                     rm -f "$DIR_MEM_LORA/huella" 2>/dev/null
                     registrar_reloj_sueno "Consolide en sueno el adaptador $NOM_T ($LIN_FINAL recuerdos)."
                     registrar_sueno "[REM] EXITO 0 ERROR en $NOM_T ($LIN_FINAL ejemplos) -> Consolidado en $OUT_GGUF."
+                    registrar_historial_sueno "Sueno consolidado con exito: aprendi $NOM_T ($LIN_FINAL recuerdos, sim media $SIM_MEDIA) y lo guarde en memoria profunda."
                 else
                     MEJORO=$(jq -r -n --argjson e "$NUM_ERRORES" --argjson me "$MEJ_ERR" --argjson s "$SIM_MEDIA" --argjson ms "$MEJ_SIM" '
                         if ($e < $me) or ($e == $me and $s >= $ms) then 1 else 0 end
@@ -1383,15 +1398,18 @@ fase_rem() {
                             quitar_de_rectificar "$NOM_T"
                             rm -f "$DIR_MEM_LORA/huella" 2>/dev/null
                             registrar_sueno "[REM] Tope de ciclos ($MAX_CICLOS_REM) en $NOM_T -> Promovido mejor LoRA (errores=$MEJ_ERR, sim=$MEJ_SIM) y vaciados aprobados."
+                            registrar_historial_sueno "Cierro $NOM_T tras $MAX_CICLOS_REM ciclos: consolide los recuerdos aprobados (sim media $MEJ_SIM)."
                             rm -rf "$DIR_T"
                         elif [[ "${ES_RECT_T:-0}" -eq 1 ]]; then
                             purgar_lora_obsoleto "$NOM_T"
                             registrar_sueno "[REM] Tope de ciclos ($MAX_CICLOS_REM) en rectificacion de $NOM_T sin aprobados -> LoRA obsoleto purgado."
+                            registrar_historial_sueno "Olvide y purgue el sueno obsoleto $NOM_T tras rectificacion."
                         else
                             if [[ -n "$PART_ORIG" ]]; then
                                 PARTS_FALLIDAS+=("$PART_ORIG")
                             fi
                             registrar_sueno "[REM] Tope de ciclos ($MAX_CICLOS_REM) en $NOM_T sin aprobados -> Conservado estado previo sin sobrescribir (particion $PART_ORIG omitida esta sesion)."
+                            registrar_historial_sueno "No logre fijar $NOM_T esta noche (0 aprobados); lo dejo descansar para otro sueno."
                             rm -rf "$DIR_T"
                         fi
                     elif [[ "$MEJORO" -eq 1 ]]; then
@@ -1406,6 +1424,7 @@ fase_rem() {
                         printf '%s\n' "$EST_NUEVO" > "${EST_F}.tmp"
                         mv -f "${EST_F}.tmp" "$EST_F" 2>/dev/null
                         registrar_sueno "[REM] Progreso en $NOM_T -> +$EP_EXTRA epoca(s) conservadora(s) (epocas_obj=$EP_NUEVA) para siguiente ciclo Profundo."
+                        registrar_historial_sueno "Mejoro en $NOM_T (sim media $SIM_MEDIA, $NUM_ERRORES/$TOTAL_EXAM por pulir); profundizo +$EP_EXTRA epoca(s)."
                     else
                         if [[ -s "$DIR_T/best.ckpt" ]]; then
                             cp -f "$DIR_T/best.ckpt" "$DIR_T/modelo.ckpt" 2>/dev/null
@@ -1425,6 +1444,7 @@ fase_rem() {
                         printf '%s\n' "$EST_NUEVO" > "${EST_F}.tmp"
                         mv -f "${EST_F}.tmp" "$EST_F" 2>/dev/null
                         registrar_sueno "[REM] Sobreajuste detectado en $NOM_T -> Rollback a epoca $MEJ_EP y LR ajustado a $LR_FINO (epocas_obj=$EP_ROLL)."
+                        registrar_historial_sueno "Note sobreajuste en $NOM_T; vuelvo a mi mejor punto (epoca $MEJ_EP) con paso mas fino."
                     fi
                 fi
 
@@ -1450,6 +1470,7 @@ while true; do
     fase_ligero
     if [[ -z "$TAREA_ELEGIDA" ]]; then
         registrar_sueno "=== SUENO COMPLETADO: sin tareas pendientes ==="
+        registrar_historial_sueno "Termine de sonar por ahora (sin recuerdos pendientes)."
         break
     fi
 
