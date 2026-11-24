@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# Normaliza la cadena de un comando/modulo eliminando prefijos (# Modulo:, bash:) y descripciones; resultado en CMD_LIMPIO
+limpiar_comando() {
+    CMD_LIMPIO="$1"
+    CMD_LIMPIO="${CMD_LIMPIO#\# Modulo: }"
+    CMD_LIMPIO="${CMD_LIMPIO#\# modulo: }"
+    CMD_LIMPIO="${CMD_LIMPIO#Modulo: }"
+    CMD_LIMPIO="${CMD_LIMPIO#bash:}"
+    CMD_LIMPIO="${CMD_LIMPIO#bash }"
+    CMD_LIMPIO="${CMD_LIMPIO%% - *}"
+    CMD_LIMPIO="${CMD_LIMPIO%% (*}"
+}

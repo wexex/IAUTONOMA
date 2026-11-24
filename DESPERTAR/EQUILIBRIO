@@ -63,16 +63,11 @@ if [[ "$ARCH_MOD" == "--entrenar" ]]; then
     if [[ -z "$PAUSAR_ENT" ]]; then PAUSAR_ENT="0"; fi
     if [[ -z "$MODO_ENT" ]]; then MODO_ENT="TOTAL"; fi
 
-    mkdir -p "$DIR_REGISTROS"
-    LOG_EQ="$DIR_REGISTROS/equilibrio.log"
-    if [[ -f "$LOG_EQ" ]]; then
-        if [[ $(wc -l < "$LOG_EQ") -ge 200 ]]; then
-            tail -n 100 "$LOG_EQ" > "${LOG_EQ}.tmp"
-            mv -f "${LOG_EQ}.tmp" "$LOG_EQ" 2>/dev/null
-        fi
-    fi
+    mkdir -p "$DIR_REGISTROS_LOGS"
+    LOG_EQ="$LOG_EQUILIBRIO"
     printf '[%s] ENTRENAMIENTO | modo=%s | hilos=%s/%s | load=%s | ram_libre=%s/%sMiB | pausar=%s\n' \
         "$(date "+%Y-%m-%d %H:%M:%S")" "$MODO_ENT" "$HILOS_ENT" "$CORES" "$LOAD_1" "$RAM_LIB" "$RAM_TOT" "$PAUSAR_ENT" >> "$LOG_EQ"
+    rotar_log "$LOG_EQ"
 
     printf '%s\t%s\t%s\t%s\t%s\n' "$HILOS_ENT" "$PAUSAR_ENT" "$MODO_ENT" "$RAM_LIB" "$LOAD_1"
     exit 0
@@ -190,15 +185,10 @@ if [[ -z "$NGL" ]]; then NGL=0; fi
 if [[ -z "$HILOS" ]]; then HILOS="$CORES"; fi
 if [[ -z "$MODO_EQ" ]]; then MODO_EQ="RAM"; fi
 
-mkdir -p "$DIR_REGISTROS"
-LOG_EQ="$DIR_REGISTROS/equilibrio.log"
-if [[ -f "$LOG_EQ" ]]; then
-    if [[ $(wc -l < "$LOG_EQ") -ge 200 ]]; then
-        tail -n 100 "$LOG_EQ" > "${LOG_EQ}.tmp"
-        mv -f "${LOG_EQ}.tmp" "$LOG_EQ" 2>/dev/null
-    fi
-fi
+mkdir -p "$DIR_REGISTROS_LOGS"
+LOG_EQ="$LOG_EQUILIBRIO"
 printf '[%s] %s | modo=%s | ngl=%s/%s | hilos=%s | peso=%sMiB | ctx=%s | vram_libre=%s/%sMiB | ram_libre=%sMiB\n' \
     "$(date "+%Y-%m-%d %H:%M:%S")" "$NOM_SERV" "$MODO_EQ" "$NGL" "$CAPAS" "$HILOS" "$PESO_MB" "$CTX_MOD" "$VRAM_LIB" "$VRAM_TOT" "$RAM_LIB" >> "$LOG_EQ"
+rotar_log "$LOG_EQ"
 
 printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$NGL" "$HILOS" "$MODO_EQ" "$VRAM_LIB" "$PESO_MB" "$CAPAS"

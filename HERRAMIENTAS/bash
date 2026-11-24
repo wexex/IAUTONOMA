@@ -221,13 +221,8 @@ if [[ "$1" == "--spec" ]]; then
 fi
 
 CMD=$(jq -r '.comando // empty' < <(printf '%s' "$1") 2>/dev/null)
-CMD="${CMD#\# Modulo: }"
-CMD="${CMD#\# modulo: }"
-CMD="${CMD#Modulo: }"
-CMD="${CMD#bash:}"
-CMD="${CMD#bash }"
-CMD="${CMD%% - *}"
-CMD="${CMD%% (*}"
+limpiar_comando "$CMD"
+CMD="$CMD_LIMPIO"
 
 if grep -qE '(rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\s+(/|/\*|~|\*)|--no-preserve-root|\bmkfs\b|\bdd\s+if=|:\(\)\{:\|:&\};:|chmod\s+-R\s+777\s+/|\b(shutdown|reboot|poweroff)\b|>\s*/dev/(sd|nvme)|&)' < <(printf '%s' "$CMD"); then
     echo "BLOQUEADO: comando de riesgo detectado ($CMD)."
@@ -245,9 +240,9 @@ if [[ -x "$DIR/AMIGDALA" ]]; then
     fi
 fi
 
-TMP_OUT="$DIR_REGISTROS/.bash_out.$$.tmp"
-TMP_ERR="$DIR_REGISTROS/.bash_err.$$.tmp"
-mkdir -p "$DIR_REGISTROS"
+TMP_OUT="$DIR_REGISTROS_TMP/.bash_out.$$.tmp"
+TMP_ERR="$DIR_REGISTROS_TMP/.bash_err.$$.tmp"
+mkdir -p "$DIR_REGISTROS_TMP"
 timeout "$TIMEOUT_HERRAMIENTA" bash -c 'for f in "$1"/*; do if [[ -f "$f" ]]; then source "$f"; fi; done; eval "$2"' _ "$DIR_MODULOS" "$CMD" >"$TMP_OUT" 2>"$TMP_ERR"
 SAL_BRUTA=$(head -c 4000 < <(cat "$TMP_OUT" "$TMP_ERR"))
 rm -f "$TMP_OUT" "$TMP_ERR" 2>/dev/null

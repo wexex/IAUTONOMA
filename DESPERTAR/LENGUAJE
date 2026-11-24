@@ -2,12 +2,8 @@
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/CONFIG"
 
-if [[ -f "$LOG_SERVER" ]]; then
-    if [[ $(wc -l < "$LOG_SERVER") -ge 1000 ]]; then
-        tail -n 500 "$LOG_SERVER" > "${LOG_SERVER}.tmp"
-        mv "${LOG_SERVER}.tmp" "$LOG_SERVER"
-    fi
-fi
+mkdir -p "$DIR_REGISTROS_LOGS"
+rotar_log "$LOG_SERVER"
 
 cd "$DIR"
 

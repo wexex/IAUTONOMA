@@ -2,7 +2,7 @@
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)/../CONFIG"
 
-mkdir -p "$DIR_REGISTROS" "$DIR_REGISTROS_OLVIDO"
+mkdir -p "$DIR_REGISTROS" "$DIR_REGISTROS_OLVIDO" "$DIR_REGISTROS_ESTADO"
 
 if [[ -e "$PARADA_OLVIDO" ]]; then
     exit 0
@@ -171,6 +171,7 @@ while true; do
                         printf '[%s] [%s] %s\n' "$FECHA_NOW" "$TAG_O" "$linea_o" >> "$LOG_OLV_PUR"
                     fi
                 done < <(printf '%s\n' "$OLVIDOS_CICLO")
+                rotar_log "$LOG_OLV_PUR"
             fi
 
             BLOQ_REP=0

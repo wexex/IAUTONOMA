@@ -27,19 +27,9 @@ if [[ $MODO_CONSOLIDAR -eq 1 ]]; then
         rm -f "$ARCH_TRAZA_CONSOLIDAR" 2>/dev/null
         exit 0
     fi
-    mkdir -p "$DIR_REGISTROS"
-    ESPERA_C=0
-    while [[ $ESPERA_C -lt 100 ]]; do
-        if [[ ! -s "$LOCK_MEMORIA" ]]; then break; fi
-        LPID_C=$(cat "$LOCK_MEMORIA" 2>/dev/null)
-        if [[ -z "$LPID_C" ]]; then break; fi
-        if ! kill -0 "$LPID_C" 2>/dev/null; then
-            rm -f "$LOCK_MEMORIA" 2>/dev/null
-            break
-        fi
-        sleep 0.1
-        ESPERA_C=$((ESPERA_C + 1))
-    done
+    mkdir -p "$DIR_REGISTROS" "$DIR_REGISTROS_LOGS" "$DIR_REGISTROS_ESTADO" "$DIR_REGISTROS_TMP"
+    find "$DIR_REGISTROS_TMP" -maxdepth 1 -type f -mmin +10 -delete 2>/dev/null
+    esperar_lock 100 0.1
     echo "$$" > "$LOCK_MEMORIA"
     trap 'rm -f "$LOCK_MEMORIA" "$ARCH_TURNO_CONSOLIDAR" "$ARCH_TRAZA_CONSOLIDAR"' EXIT
     {
@@ -62,7 +52,7 @@ else
 
     # Despertar automatico y reinicio del contador de vigilia (solo en interacciones normales)
     if [[ $MODO_INTERNO -eq 0 ]]; then
-        mkdir -p "$DIR_REGISTROS"
+        mkdir -p "$DIR_REGISTROS" "$DIR_REGISTROS_LOGS" "$DIR_REGISTROS_ESTADO" "$DIR_REGISTROS_TMP"
         date +%s > "$ULTIMA_INTERACCION"
         ACABA_DE_DESPERTAR=0
 
@@ -161,20 +151,7 @@ else
             true < <(setsid "$DIR/DESPERTAR/ABURRIMIENTO" </dev/null >/dev/null 2>/dev/null)
         fi
 
-        if [[ ! -e "$PARADA_OLVIDO" ]]; then
-            OLVIDO_VIVO=0
-            if [[ -s "$PID_OLVIDO" ]]; then
-                OPID=$(cat "$PID_OLVIDO" 2>/dev/null)
-                if [[ -n "$OPID" ]]; then
-                    if kill -0 "$OPID" 2>/dev/null; then
-                        OLVIDO_VIVO=1
-                    fi
-                fi
-            fi
-            if [[ $OLVIDO_VIVO -eq 0 ]]; then
-                true < <(setsid "$DIR/DESPERTAR/OLVIDO" --daemon </dev/null >/dev/null 2>/dev/null)
-            fi
-        fi
+        asegurar_olvido
 
         if [[ $ACABA_DE_DESPERTAR -eq 1 ]]; then
             ENTRADA="[$FECHA_HORA] $ESTIMULO_DESPERTAR $ENTRADA"
@@ -187,7 +164,7 @@ else
 
     ARCH_TRAZA_TOOL=""
     if [[ $MODO_INTERNO -eq 0 ]]; then
-        ARCH_TRAZA_TOOL="$DIR_REGISTROS/.traza_tool.$$.json"
+        ARCH_TRAZA_TOOL="$DIR_REGISTROS_TMP/.traza_tool.$$.json"
         rm -f "$ARCH_TRAZA_TOOL" 2>/dev/null
         export ARCH_TRAZA_TOOL
     fi
@@ -203,6 +180,7 @@ else
 
     LINEA_LOG="Peticion: $SEP_USUARIO $ENTRADA_UNA_LINEA | Respuesta: $SEP_IA $RESPUESTA_UNA_LINEA"
     echo "$LINEA_LOG" >> "$HISTORIAL"
+    rotar_log "$HISTORIAL"
 
     if [[ $MODO_INTERNO -eq 0 ]]; then
         if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
@@ -211,7 +189,7 @@ else
                 VAL_AM=$(jq -r '.ultima_valencia // 0' "$AMIGDALA" 2>/dev/null)
                 if [[ -n "$VAL_AM" ]]; then VAL_TURNO="$VAL_AM"; fi
             fi
-            ARCH_TURNO_TMP="$DIR_REGISTROS/.turno.$$.tmp"
+            ARCH_TURNO_TMP="$DIR_REGISTROS_TMP/.turno.$$.tmp"
             printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$FECHA_HORA" "$ENTRADA_UNA_LINEA" "$RESPUESTA_UNA_LINEA" "$TS_TURNO" "${ACABA_DE_DESPERTAR:-0}" "$VAL_TURNO" > "$ARCH_TURNO_TMP"
             true < <(setsid "$DIR/ENTRADA" --consolidar "$ARCH_TURNO_TMP" "$ARCH_TRAZA_TOOL" </dev/null >/dev/null 2>/dev/null)
         else
@@ -219,19 +197,8 @@ else
         fi
         exit 0
     elif [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
-        mkdir -p "$DIR_REGISTROS"
-        ESPERA_I=0
-        while [[ $ESPERA_I -lt 100 ]]; do
-            if [[ ! -s "$LOCK_MEMORIA" ]]; then break; fi
-            LPID_I=$(cat "$LOCK_MEMORIA" 2>/dev/null)
-            if [[ -z "$LPID_I" ]]; then break; fi
-            if ! kill -0 "$LPID_I" 2>/dev/null; then
-                rm -f "$LOCK_MEMORIA" 2>/dev/null
-                break
-            fi
-            sleep 0.1
-            ESPERA_I=$((ESPERA_I + 1))
-        done
+        mkdir -p "$DIR_REGISTROS" "$DIR_REGISTROS_LOGS" "$DIR_REGISTROS_ESTADO" "$DIR_REGISTROS_TMP"
+        esperar_lock 100 0.1
         echo "$$" > "$LOCK_MEMORIA"
         trap 'if [[ -s "$LOCK_MEMORIA" ]]; then if [[ "$(cat "$LOCK_MEMORIA" 2>/dev/null)" == "$$" ]]; then rm -f "$LOCK_MEMORIA" 2>/dev/null; fi; fi' EXIT
     fi

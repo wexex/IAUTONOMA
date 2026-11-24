@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# Garantiza que el demonio DESPERTAR/OLVIDO este activo salvo parada manual explicita
+asegurar_olvido() {
+    if [[ ! -e "$PARADA_OLVIDO" ]]; then
+        OLV_FN_VIVO=0
+        if [[ -s "$PID_OLVIDO" ]]; then
+            OPID_FN=$(cat "$PID_OLVIDO" 2>/dev/null)
+            if [[ -n "$OPID_FN" ]]; then
+                if kill -0 "$OPID_FN" 2>/dev/null; then
+                    OLV_FN_VIVO=1
+                fi
+            fi
+        fi
+        if [[ $OLV_FN_VIVO -eq 0 ]]; then
+            if [[ -x "$DIR/DESPERTAR/OLVIDO" ]]; then
+                true < <(setsid "$DIR/DESPERTAR/OLVIDO" --daemon </dev/null >/dev/null 2>/dev/null)
+            fi
+        fi
+    fi
+}

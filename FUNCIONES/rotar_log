@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# Rotacion estandar de logs: 1000 lineas/fichero, hasta 10 ficheros; al completar 10 borra 1..5 y renombra 6..10 -> 1..5
+rotar_log() {
+    R_LOG="$1"
+    if [[ -s "$R_LOG" ]]; then
+        LIM_LIN="${MAX_LINEAS_LOG:-1000}"
+        LIM_FICH="${MAX_FICHEROS_LOG:-10}"
+        MITAD_FICH=$(( LIM_FICH / 2 ))
+        if [[ $MITAD_FICH -lt 1 ]]; then MITAD_FICH=1; fi
+        LIN_ACT=$(( $(wc -l < "$R_LOG" 2>/dev/null) ))
+        if [[ $LIN_ACT -ge $LIM_LIN ]]; then
+            BASE_R="${R_LOG%.log}"
+            EXT_R=""
+            if [[ "$BASE_R" != "$R_LOG" ]]; then
+                EXT_R=".log"
+            fi
+            while [[ $LIN_ACT -ge $LIM_LIN ]]; do
+                N_MAX_R=0
+                for (( i_r=1; i_r<=LIM_FICH; i_r++ )); do
+                    if [[ -e "${BASE_R}_${i_r}${EXT_R}" ]]; then
+                        N_MAX_R="$i_r"
+                    fi
+                done
+                N_SIG_R=$(( N_MAX_R + 1 ))
+                if [[ $N_SIG_R -gt $LIM_FICH ]]; then
+                    for (( i_r=1; i_r<=MITAD_FICH; i_r++ )); do
+                        rm -f "${BASE_R}_${i_r}${EXT_R}" 2>/dev/null
+                    done
+                    for (( i_r=MITAD_FICH+1; i_r<=LIM_FICH; i_r++ )); do
+                        DEST_R=$(( i_r - MITAD_FICH ))
+                        if [[ -e "${BASE_R}_${i_r}${EXT_R}" ]]; then
+                            mv -f "${BASE_R}_${i_r}${EXT_R}" "${BASE_R}_${DEST_R}${EXT_R}" 2>/dev/null
+                        fi
+                    done
+                    N_SIG_R=$(( LIM_FICH - MITAD_FICH + 1 ))
+                fi
+                head -n "$LIM_LIN" "$R_LOG" > "${BASE_R}_${N_SIG_R}${EXT_R}" 2>/dev/null
+                tail -n "+$(( LIM_LIN + 1 ))" "$R_LOG" > "${R_LOG}.$$.rot" 2>/dev/null
+                mv -f "${R_LOG}.$$.rot" "$R_LOG" 2>/dev/null
+                if [[ $N_SIG_R -ge $LIM_FICH ]]; then
+                    for (( i_r=1; i_r<=MITAD_FICH; i_r++ )); do
+                        rm -f "${BASE_R}_${i_r}${EXT_R}" 2>/dev/null
+                    done
+                    for (( i_r=MITAD_FICH+1; i_r<=LIM_FICH; i_r++ )); do
+                        DEST_R=$(( i_r - MITAD_FICH ))
+                        if [[ -e "${BASE_R}_${i_r}${EXT_R}" ]]; then
+                            mv -f "${BASE_R}_${i_r}${EXT_R}" "${BASE_R}_${DEST_R}${EXT_R}" 2>/dev/null
+                        fi
+                    done
+                fi
+                LIN_ACT=$(( $(wc -l < "$R_LOG" 2>/dev/null) ))
+            done
+        fi
+    fi
+}

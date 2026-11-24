@@ -236,6 +236,7 @@ IAUTONOMA/
 ├── ENTRADA                 # Orquestador principal: vigilia, equilibrio, tono emocional y reconsolidación (LTP/LTD)
 ├── AGENTE                  # Motor de inferencia, recuperación vectorial, bucle iterativo y crítico UTD
 ├── AMIGDALA                # Evaluador de seguridad (--entrada/--comando/--externo), tono (--tono) y crítico (--critico)
+├── FUNCIONES/              # Utilidades compartidas auto-cargadas por CONFIG (rotar_log, dormir_puerto, esperar_lock, asegurar_olvido, limpiar_comando)
 ├── DESPERTAR/
 │   ├── EQUILIBRIO          # Equilibrador dinámico RAM/VRAM (-ngl e hilos) y adaptador de entrenamiento (--entrenar)
 │   ├── LENGUAJE            # Lanzador llama-server para chat (:8081, KV-cache q8_0, auto GPU/RAM)
@@ -253,7 +254,7 @@ IAUTONOMA/
 │   └── DATASETS/           # Datasets JSONL e indice.json con centroides vectoriales reales
 ├── MODULOS/                # 26 scripts Bash (28 comandos) cargados dinámicamente
 ├── MEMORIA/                # (Generado en ejecución, excluido de Git) Capas JSON e índices
-└── REGISTROS/              # (Generado en ejecución, excluido de Git) Logs, equilibrio.log y estado de vigilia
+└── REGISTROS/              # (Generado en ejecución, excluido de Git) historial.log, LOGS/, OLVIDO/, ESTADO/ y TMP/
 ```
 
 ---
@@ -275,7 +276,7 @@ IAUTONOMA/
 ```bash
 git clone https://github.com/wexex/IAUTONOMA.git
 cd IAUTONOMA
-chmod +x CHAT ENTRADA AGENTE AMIGDALA DESPERTAR/* HERRAMIENTAS/* MODULOS/*
+chmod +x CHAT ENTRADA AGENTE AMIGDALA FUNCIONES/* DESPERTAR/* HERRAMIENTAS/* MODULOS/*
 ```
 
 Asegúrate de disponer de los modelos GGUF en `../MODELO/` o actualiza las variables `MODELO`, `MODELO_MEMORIA` y `MODELO_AMIGDALA` en `CONFIG`.
@@ -330,6 +331,7 @@ Todos los parámetros operativos se centralizan en `CONFIG`:
 | `MAX_HILO` / `MAX_HIPOCAMPO` / `MAX_RELOJ` | `2` / `3` / `2` | Turnos de hilo inmediato, recuerdos similares del hipocampo y eventos del reloj biológico inyectados al contexto. |
 | `VIGENCIA_HERRAMIENTA` | `300` | Segundos de vigencia de una salida real de herramienta (`sensor`) en el hipocampo dentro de la misma vigilia. |
 | `AMIGDALA` / `MAX_FRUSTRACION` | `MEMORIA/amigdala.json` / `3` | Registro de interocepción (latencia media, fatiga, frustración y valencia) y tope de fallos consecutivos antes de cortar bucles. |
+| `MAX_LINEAS_LOG` / `MAX_FICHEROS_LOG` | `1000` / `10` | Límite de líneas por fichero y máximo de particiones por log (`FUNCIONES/rotar_log`): al completar `10` ficheros elimina `1..5` y renombra `6..10` a `1..5` manteniendo un buffer garantizado de `5,000` a `10,000` líneas. |
 | `MAX_MEMORIA` / `MAX_MEM_HERRAMIENTA` | `2` / `1` | Límites de recuerdos de largo plazo inyectados en el contexto por turno de inferencia. |
 | `MAX_PARTICION` / `MAX_MODULOS` | `100` / `8` | Tamaño máximo de partición JSONL y tope Top-K de módulos enviados al prompt. |
 | `LORA_BASE` / `LORA_ESCALA` | `criterio_iautonoma` / `0.70` | Adaptador LoRA siempre activo y escala aplicada vía `POST /lora-adapters`. |

@@ -10,18 +10,7 @@ while ! curl -sf "http://${HOST}:${PUERTO}/health" >/dev/null 2>/dev/null; do sl
 
 # Si un turno previo aun esta consolidando memoria en segundo plano, esperar brevemente su cierre atomico
 if [[ -s "$LOCK_MEMORIA" ]]; then
-    ESPERA_LOCK=0
-    while [[ $ESPERA_LOCK -lt 50 ]]; do
-        if [[ ! -s "$LOCK_MEMORIA" ]]; then break; fi
-        LPID=$(cat "$LOCK_MEMORIA" 2>/dev/null)
-        if [[ -z "$LPID" ]]; then break; fi
-        if ! kill -0 "$LPID" 2>/dev/null; then
-            rm -f "$LOCK_MEMORIA" 2>/dev/null
-            break
-        fi
-        sleep 0.1
-        ESPERA_LOCK=$((ESPERA_LOCK + 1))
-    done
+    esperar_lock 50 0.1
 fi
 
 H_HIP=$(( ${DECAIMIENTO_HIPOCAMPO} ))
@@ -1123,13 +1112,8 @@ else
                 T_NAME_C=$(jq -r --argjson i "$IDX_C" '.choices[0].message.tool_calls[$i].function.name // empty' < <(printf '%s' "$RESPUESTA") 2>/dev/null)
                 T_ARGS_C=$(jq -r --argjson i "$IDX_C" '.choices[0].message.tool_calls[$i].function.arguments // empty' < <(printf '%s' "$RESPUESTA") 2>/dev/null)
                 M_USADO_C=$(jq -r '.comando // empty' < <(printf '%s' "$T_ARGS_C") 2>/dev/null)
-                M_USADO_C="${M_USADO_C#\# Modulo: }"
-                M_USADO_C="${M_USADO_C#\# modulo: }"
-                M_USADO_C="${M_USADO_C#Modulo: }"
-                M_USADO_C="${M_USADO_C#bash:}"
-                M_USADO_C="${M_USADO_C#bash }"
-                M_USADO_C="${M_USADO_C%% - *}"
-                M_USADO_C="${M_USADO_C%% (*}"
+                limpiar_comando "$M_USADO_C"
+                M_USADO_C="$CMD_LIMPIO"
                 if [[ "$ETIQUETAS_TOOLS" != *"[$T_NAME_C:$M_USADO_C]"$'\n'* ]]; then
                     NUEVAS_EN_PASO=$((NUEVAS_EN_PASO + 1))
                 fi
@@ -1148,13 +1132,8 @@ else
                 TOOL_NAME=$(jq -r --argjson i "$IDX_T" '.choices[0].message.tool_calls[$i].function.name // empty' < <(printf '%s' "$RESPUESTA") 2>/dev/null)
                 TOOL_ARGS=$(jq -r --argjson i "$IDX_T" '.choices[0].message.tool_calls[$i].function.arguments // empty' < <(printf '%s' "$RESPUESTA") 2>/dev/null)
                 MODULO_USADO=$(jq -r '.comando // empty' < <(printf '%s' "$TOOL_ARGS") 2>/dev/null)
-                MODULO_USADO="${MODULO_USADO#\# Modulo: }"
-                MODULO_USADO="${MODULO_USADO#\# modulo: }"
-                MODULO_USADO="${MODULO_USADO#Modulo: }"
-                MODULO_USADO="${MODULO_USADO#bash:}"
-                MODULO_USADO="${MODULO_USADO#bash }"
-                MODULO_USADO="${MODULO_USADO%% - *}"
-                MODULO_USADO="${MODULO_USADO%% (*}"
+                limpiar_comando "$MODULO_USADO"
+                MODULO_USADO="$CMD_LIMPIO"
                 TOOL_ID=$(jq -r --argjson i "$IDX_T" --arg p "${PASO}_${IDX_T}" '.choices[0].message.tool_calls[$i].id // ("call_" + $p)' < <(printf '%s' "$RESPUESTA") 2>/dev/null)
 
                 FIRMA_LLAMADA="[$TOOL_NAME:$MODULO_USADO]"

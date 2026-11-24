@@ -5,7 +5,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/CONFIG"
 UN_CICLO=0
 if [[ "$1" == "--un-ciclo" ]]; then UN_CICLO=1; fi
 
-mkdir -p "$DIR_SUENO" "$DIR_REGISTROS" "$DIR_LORA_DATASETS" "$DIR_LORA_PESOS"
+mkdir -p "$DIR_SUENO" "$DIR_REGISTROS" "$DIR_REGISTROS_LOGS" "$DIR_REGISTROS_ESTADO" "$DIR_REGISTROS_TMP" "$DIR_LORA_DATASETS" "$DIR_LORA_PESOS"
+find "$DIR_REGISTROS_TMP" -maxdepth 1 -type f -mmin +10 -delete 2>/dev/null
+rotar_log "$LOG_SUENO"
+rotar_log "$LOG_LORA_ENTRENAR"
 
 # Evitar instancias duplicadas de DORMIR
 if [[ -s "$PID_DORMIR" ]]; then
@@ -27,6 +30,7 @@ fi
 
 registrar_sueno() {
     printf '[%s] %s\n' "$(date "+%Y-%m-%d %H:%M:%S")" "$1" >> "$LOG_SUENO"
+    rotar_log "$LOG_SUENO"
 }
 
 registrar_reloj_sueno() {
@@ -50,21 +54,6 @@ registrar_reloj_sueno() {
             printf '%s\n' "$RELOJ_S" > "${RELOJ}.$$.tmp"
             mv -f "${RELOJ}.$$.tmp" "$RELOJ" 2>/dev/null
         fi
-    fi
-}
-
-dormir_puerto() {
-    P_OBJ="$1"
-    if command -v taskkill >/dev/null 2>/dev/null; then
-        while IFS= read -r win_pid; do
-            if [[ -n "$win_pid" ]]; then
-                if [[ "$win_pid" != "0" ]]; then
-                    taskkill //F //T //PID "$win_pid" >/dev/null 2>/dev/null
-                fi
-            fi
-        done < <(awk -v p=":$P_OBJ" '$4 == "LISTENING" { if (substr($2, length($2) - length(p) + 1) == p) print $5 }' < <(netstat -ano 2>/dev/null))
-    elif command -v fuser >/dev/null 2>/dev/null; then
-        fuser -k "${P_OBJ}/tcp" >/dev/null 2>/dev/null
     fi
 }
 
@@ -133,18 +122,7 @@ vaciar_aprobados_capa() {
 
     if [[ -s "$RUTA_PART" ]]; then
         if [[ -s "$ARCH_APROB" ]]; then
-            ESPERA_L=0
-            while [[ $ESPERA_L -lt 100 ]]; do
-                if [[ ! -s "$LOCK_MEMORIA" ]]; then break; fi
-                LPID_L=$(cat "$LOCK_MEMORIA" 2>/dev/null)
-                if [[ -z "$LPID_L" ]]; then break; fi
-                if ! kill -0 "$LPID_L" 2>/dev/null; then
-                    rm -f "$LOCK_MEMORIA" 2>/dev/null
-                    break
-                fi
-                sleep 0.1
-                ESPERA_L=$((ESPERA_L + 1))
-            done
+            esperar_lock 100 0.1
             echo "$$" > "$LOCK_MEMORIA"
 
             QUEDAN_JSON=$(jq -a -c -s '
@@ -774,6 +752,7 @@ fase_ligero() {
             printf '[%s] SUENO LoRA=%s | clase=%s | modo=%s | origen=%s | ejemplos=%s | epocas_obj=%s\n' \
                 "$(date "+%Y-%m-%d %H:%M:%S")" "$TAREA_ELEGIDA" "$CLASE_SEL" "$MODO_REG_L" "$PART_ELEGIDA" "$NUM_EJ" "$EP_INIT" >> "$LOG_LORA_ENTRENAR"
             jq -r '"  - " + ((.u // "") | gsub("[\r\n]+"; " "))' "$DIR_TAREA/origen.json" >> "$LOG_LORA_ENTRENAR" 2>/dev/null
+            rotar_log "$LOG_LORA_ENTRENAR"
         fi
     fi
 }
@@ -893,17 +872,16 @@ crear_sandbox_sueno() {
         "$DIR_SANDBOX_SUENO/LORA/DATASETS" \
         "$DIR_SANDBOX_SUENO/MEMORIA/MODULOS" \
         "$DIR_SANDBOX_SUENO/MEMORIA/LORA" \
+        "$DIR_SANDBOX_SUENO/REGISTROS/LOGS" \
+        "$DIR_SANDBOX_SUENO/REGISTROS/ESTADO" \
+        "$DIR_SANDBOX_SUENO/REGISTROS/TMP" \
         "$DIR_SANDBOX_SUENO/REGISTROS/OLVIDO"
 }
 
 poblar_sandbox_recuerdo() {
-    CMD_REC="$1"
+    limpiar_comando "$1"
+    CMD_REC="$CMD_LIMPIO"
     OUT_REC="$2"
-    CMD_REC="${CMD_REC#\# Modulo: }"
-    CMD_REC="${CMD_REC#\# modulo: }"
-    CMD_REC="${CMD_REC#Modulo: }"
-    CMD_REC="${CMD_REC#bash:}"
-    CMD_REC="${CMD_REC#bash }"
     MOD_REC="${CMD_REC%% *}"
     REST_REC="${CMD_REC#"$MOD_REC"}"
     REST_REC="${REST_REC# }"
@@ -1461,22 +1439,7 @@ PARTS_FALLIDAS=( )
 registrar_sueno "=== INICIO DE SUENO (PID=$$, modelo=$NOMBRE_IA) ==="
 
 while true; do
-    if [[ ! -e "$PARADA_OLVIDO" ]]; then
-        OLV_VIVO=0
-        if [[ -s "$PID_OLVIDO" ]]; then
-            OPID_D=$(cat "$PID_OLVIDO" 2>/dev/null)
-            if [[ -n "$OPID_D" ]]; then
-                if kill -0 "$OPID_D" 2>/dev/null; then
-                    OLV_VIVO=1
-                fi
-            fi
-        fi
-        if [[ $OLV_VIVO -eq 0 ]]; then
-            if [[ -x "$DIR/DESPERTAR/OLVIDO" ]]; then
-                true < <(setsid "$DIR/DESPERTAR/OLVIDO" --daemon </dev/null >/dev/null 2>/dev/null)
-            fi
-        fi
-    fi
+    asegurar_olvido
 
     comprobar_despertar
     if [[ $DESPERTO -eq 1 ]]; then

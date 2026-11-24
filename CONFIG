@@ -51,6 +51,7 @@ DECAIMIENTO_HIPOCAMPO="24"
 INTERVALO_OLVIDO="15"
 
 # Directorios
+DIR_FUNCIONES="$DIR/FUNCIONES"
 DIR_HERRAMIENTAS="$DIR/HERRAMIENTAS"
 DIR_MODULOS="$DIR/MODULOS"
 DIR_MEMORIA="$DIR/MEMORIA"
@@ -102,20 +103,26 @@ MAX_LORAS_ACTIVOS="2"
 UMBRAL_LORA="0.55"
 URL_LORA="http://${HOST}:${PUERTO}/lora-adapters"
 
-# Historial de todas las interacciones
-HISTORIAL="$DIR_REGISTROS/historial.log"
-LOG_SERVER="$DIR_REGISTROS/server.log"
-LOCK_MEMORIA="$DIR_REGISTROS/consolidando.lock"
+# Historial, logs, estado interno y temporales
+DIR_REGISTROS_LOGS="$DIR_REGISTROS/LOGS"
 DIR_REGISTROS_OLVIDO="$DIR_REGISTROS/OLVIDO"
-PID_OLVIDO="$DIR_REGISTROS/olvido.pid"
-TS_OLVIDO="$DIR_REGISTROS/olvido.ts"
+DIR_REGISTROS_ESTADO="$DIR_REGISTROS/ESTADO"
+DIR_REGISTROS_TMP="$DIR_REGISTROS/TMP"
+MAX_LINEAS_LOG="1000"
+MAX_FICHEROS_LOG="10"
+HISTORIAL="$DIR_REGISTROS/historial.log"
+LOG_SERVER="$DIR_REGISTROS_LOGS/server.log"
+LOG_LORA_ENTRENAR="$DIR_REGISTROS_LOGS/lora_entrenar.log"
+LOG_EQUILIBRIO="$DIR_REGISTROS_LOGS/equilibrio.log"
+LOCK_MEMORIA="$DIR_REGISTROS_ESTADO/consolidando.lock"
+PID_OLVIDO="$DIR_REGISTROS_ESTADO/olvido.pid"
+TS_OLVIDO="$DIR_REGISTROS_ESTADO/olvido.ts"
 PARADA_OLVIDO="$DIR_MEMORIA/OLVIDO_PARADA"
-LOG_LORA_ENTRENAR="$DIR_REGISTROS/lora_entrenar.log"
 
 # Aburrimiento (despertar automatico y tiempo despierto en segundos)
 TIEMPO_DESPIERTO="5*60"
-ULTIMA_INTERACCION="$DIR_REGISTROS/ultima_interaccion"
-PID_ABURRIMIENTO="$DIR_REGISTROS/aburrimiento.pid"
+ULTIMA_INTERACCION="$DIR_REGISTROS_ESTADO/ultima_interaccion"
+PID_ABURRIMIENTO="$DIR_REGISTROS_ESTADO/aburrimiento.pid"
 ESTIMULO_DESPERTAR="<<Te despiertas>>"
 ESTIMULO_SILENCIO="<<Todo esta en silencio>>"
 ESTIMULO_DORMIR="<<Te duermes>>"
@@ -123,9 +130,9 @@ ESTIMULO_DORMIR="<<Te duermes>>"
 # Mecanismo de sueno (Ligero -> Profundo -> REM con consolidacion pausable en LoRA)
 DIR_SUENO="$DIR_MEMORIA/SUENO"
 DIR_SANDBOX_SUENO="$DIR/SUEÑO"
-PID_DORMIR="$DIR_REGISTROS/dormir.pid"
-SENAL_DESPERTAR="$DIR_REGISTROS/despertar.senal"
-LOG_SUENO="$DIR_REGISTROS/sueno.log"
+PID_DORMIR="$DIR_REGISTROS_ESTADO/dormir.pid"
+SENAL_DESPERTAR="$DIR_REGISTROS_ESTADO/despertar.senal"
+LOG_SUENO="$DIR_REGISTROS_LOGS/sueno.log"
 MIN_RECUERDOS_SUENO="3"
 MAX_EJEMPLOS_LORA="10"
 MAX_CICLOS_REM="4"
@@ -142,6 +149,15 @@ NOMBRE_USUARIO="$(whoami)"
 # Separadores
 SEP_USUARIO="$NOMBRE_USUARIO:"
 SEP_IA="$NOMBRE_IA:"
+
+# Cargar funciones compartidas (FUNCIONES/*)
+if [[ -d "$DIR_FUNCIONES" ]]; then
+    for _fn_arch in "$DIR_FUNCIONES"/*; do
+        if [[ -f "$_fn_arch" ]]; then
+            source "$_fn_arch"
+        fi
+    done
+fi
 
 
 

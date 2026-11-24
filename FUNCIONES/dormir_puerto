@@ -1,0 +1,17 @@
+#!/bin/bash
+
+# Detiene el proceso que escucha en un puerto TCP local (Windows taskkill o Linux fuser)
+dormir_puerto() {
+    P_OBJ="$1"
+    if command -v taskkill >/dev/null 2>/dev/null; then
+        while IFS= read -r win_pid; do
+            if [[ -n "$win_pid" ]]; then
+                if [[ "$win_pid" != "0" ]]; then
+                    taskkill //F //T //PID "$win_pid" >/dev/null 2>/dev/null
+                fi
+            fi
+        done < <(awk -v p=":$P_OBJ" '$4 == "LISTENING" { if (substr($2, length($2) - length(p) + 1) == p) print $5 }' < <(netstat -ano 2>/dev/null))
+    elif command -v fuser >/dev/null 2>/dev/null; then
+        fuser -k "${P_OBJ}/tcp" >/dev/null 2>/dev/null
+    fi
+}

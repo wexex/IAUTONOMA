@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# Espera a que termine una consolidacion activa en LOCK_MEMORIA (limpia lock huerfano si el PID murio)
+esperar_lock() {
+    MAX_IT_L="${1:-100}"
+    PAUSA_L="${2:-0.1}"
+    ESPERA_FN_L=0
+    while [[ $ESPERA_FN_L -lt $MAX_IT_L ]]; do
+        if [[ ! -s "$LOCK_MEMORIA" ]]; then break; fi
+        LPID_FN=$(cat "$LOCK_MEMORIA" 2>/dev/null)
+        if [[ -z "$LPID_FN" ]]; then break; fi
+        if ! kill -0 "$LPID_FN" 2>/dev/null; then
+            rm -f "$LOCK_MEMORIA" 2>/dev/null
+            break
+        fi
+        sleep "$PAUSA_L"
+        ESPERA_FN_L=$((ESPERA_FN_L + 1))
+    done
+}
