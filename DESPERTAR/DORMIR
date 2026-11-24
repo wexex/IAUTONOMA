@@ -307,6 +307,7 @@ fase_ligero() {
                         .[ ] |
                         select(
                             type == "object" and
+                            (.valencia // 0) >= 0 and
                             (.herramienta // 0) == 0 and
                             (((.messages[0].content // "") | length) > 0) and
                             (((.messages[1].content // "") | length) > 0) and
@@ -342,6 +343,7 @@ fase_ligero() {
                         .[ ] |
                         select(
                             type == "object" and
+                            (.valencia // 0) >= 0 and
                             (.messages | type) == "array" and
                             (.messages | length) >= 4 and
                             (((.messages[0].content // "") | length) > 0) and
@@ -563,6 +565,7 @@ fase_ligero() {
                         $items[ ] |
                         select(
                             type == "object" and
+                            (.valencia // 0) >= 0 and
                             (.messages | type) == "array" and
                             (.messages | length) >= 4 and
                             (((.messages[0].content // "") | length) > 0) and
@@ -577,10 +580,11 @@ fase_ligero() {
                         if ($ref != null and ($ref | length) > 0) then
                             (norm($ref)) as $nr |
                             map(
+                                (if (.valencia // 0) > 0 then 0.15 else 0 end) as $sal |
                                 if (.embedding != null and (.embedding | length) == ($ref | length)) then
-                                    . + {_s: (dot(.embedding; $ref) / (norm(.embedding) * $nr))}
+                                    . + {_s: ((dot(.embedding; $ref) / (norm(.embedding) * $nr)) + $sal)}
                                 else
-                                    . + {_s: 0}
+                                    . + {_s: $sal}
                                 end
                             ) | sort_by(-._s) | map(del(._s))
                         else
@@ -598,6 +602,7 @@ fase_ligero() {
                         $items[ ] |
                         select(
                             type == "object" and
+                            (.valencia // 0) >= 0 and
                             (.herramienta // 0) == 0 and
                             (((.messages[0].content // "") | length) > 0) and
                             (((.messages[1].content // "") | length) > 0) and
@@ -610,10 +615,11 @@ fase_ligero() {
                         if ($ref != null and ($ref | length) > 0) then
                             (norm($ref)) as $nr |
                             map(
+                                (if (.valencia // 0) > 0 then 0.15 else 0 end) as $sal |
                                 if (.embedding != null and (.embedding | length) == ($ref | length)) then
-                                    . + {_s: (dot(.embedding; $ref) / (norm(.embedding) * $nr))}
+                                    . + {_s: ((dot(.embedding; $ref) / (norm(.embedding) * $nr)) + $sal)}
                                 else
-                                    . + {_s: 0}
+                                    . + {_s: $sal}
                                 end
                             ) | sort_by(-._s) | map(del(._s))
                         else
@@ -812,25 +818,58 @@ fase_profundo() {
             ARGS_EXTRA+=(--reset-lr)
         fi
 
-        registrar_sueno "[N3 PROFUNDO] Entrenando $NOM_T (clase=$CLASE_T, epocas_obj=$EP_OBJ, lr=$LR_ACT, capas=${CAPA_INICIO_SUENO}..23)..."
+        HILOS_ENT=""
+        PAUSAR_ENT="0"
+        MODO_ENT="TOTAL"
+        if [[ -x "$DIR/DESPERTAR/EQUILIBRIO" ]]; then
+            IFS=$'\t' read -r HILOS_ENT PAUSAR_ENT MODO_ENT _RL_E _LD_E < <("$DIR/DESPERTAR/EQUILIBRIO" --entrenar 2>/dev/null)
+            if [[ "${PAUSAR_ENT:-0}" -eq 1 ]]; then
+                registrar_sueno "[EQUILIBRIO] RAM libre baja antes de entrenar $NOM_T -> Pausa preventiva 15s..."
+                P_RAM=0
+                while [[ $P_RAM -lt 15 ]]; do
+                    sleep 1
+                    comprobar_despertar
+                    if [[ $DESPERTO -eq 1 ]]; then break; fi
+                    P_RAM=$((P_RAM + 1))
+                done
+                if [[ $DESPERTO -eq 1 ]]; then
+                    PROFUNDO_RC=42
+                else
+                    IFS=$'\t' read -r HILOS_ENT PAUSAR_ENT MODO_ENT _RL_E _LD_E < <("$DIR/DESPERTAR/EQUILIBRIO" --entrenar 2>/dev/null)
+                fi
+            fi
+        fi
 
-        "$PY_BIN" "$R_SCRIPT" \
-            --dataset "$R_DS" \
-            --out "$R_OUT" \
-            --base-model "$MODELO_BASE_HF" \
-            --modules-dir "$R_MODS" \
-            --checkpoint "$R_CKPT" \
-            --cache-file "$R_CACHE" \
-            --stop-file "$R_STOP" \
-            --start-layer "${CAPA_INICIO_SUENO:-18}" \
-            --rank "${RANGO_LORA_SUENO:-4}" \
-            --alpha "${ALFA_LORA_SUENO:-16}" \
-            --epochs "$EP_OBJ" \
-            --lr "$LR_ACT" \
-            --grad-accum "${GRAD_ACCUM_SUENO:-2}" \
-            --compact \
-            "${ARGS_EXTRA[@]}" >> "$LOG_SUENO" 2>> "$LOG_SUENO"
-        PROFUNDO_RC=$?
+        if [[ "${PROFUNDO_RC:-0}" -ne 42 ]]; then
+            if [[ -n "$HILOS_ENT" ]]; then
+                ARGS_EXTRA+=(--threads "$HILOS_ENT")
+            fi
+
+            CMD_PREFIX=( )
+            if command -v nice >/dev/null 2>/dev/null; then
+                CMD_PREFIX=(nice -n 10)
+            fi
+
+            registrar_sueno "[N3 PROFUNDO] Entrenando $NOM_T (clase=$CLASE_T, epocas_obj=$EP_OBJ, lr=$LR_ACT, capas=${CAPA_INICIO_SUENO}..23, equilibrio=$MODO_ENT, hilos=${HILOS_ENT:-auto})..."
+
+            "${CMD_PREFIX[@]}" "$PY_BIN" "$R_SCRIPT" \
+                --dataset "$R_DS" \
+                --out "$R_OUT" \
+                --base-model "$MODELO_BASE_HF" \
+                --modules-dir "$R_MODS" \
+                --checkpoint "$R_CKPT" \
+                --cache-file "$R_CACHE" \
+                --stop-file "$R_STOP" \
+                --start-layer "${CAPA_INICIO_SUENO:-18}" \
+                --rank "${RANGO_LORA_SUENO:-4}" \
+                --alpha "${ALFA_LORA_SUENO:-16}" \
+                --epochs "$EP_OBJ" \
+                --lr "$LR_ACT" \
+                --grad-accum "${GRAD_ACCUM_SUENO:-2}" \
+                --compact \
+                "${ARGS_EXTRA[@]}" >> "$LOG_SUENO" 2>> "$LOG_SUENO"
+            PROFUNDO_RC=$?
+        fi
 
         if [[ $PROFUNDO_RC -eq 42 ]]; then
             registrar_sueno "[N3 PROFUNDO] Pausado en checkpoint por despertar del usuario ($NOM_T)."

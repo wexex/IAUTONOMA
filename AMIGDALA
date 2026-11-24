@@ -12,6 +12,143 @@ elif [[ "$1" == "--externo" ]]; then
 elif [[ "$1" == "--comando" ]]; then
     MODO="comando"
     shift
+elif [[ "$1" == "--tono" ]]; then
+    MODO="tono"
+    shift
+elif [[ "$1" == "--critico" ]]; then
+    MODO="critico"
+    shift
+fi
+
+if [[ "$MODO" == "critico" ]]; then
+    PREG_C="$1"
+    BORR_C="$2"
+    SENS_C="$3"
+    if [[ -z "$PREG_C" ]]; then
+        printf 'OK\tok\n'
+        exit 0
+    fi
+    if [[ -z "$BORR_C" ]]; then
+        printf 'OK\tok\n'
+        exit 0
+    fi
+    PREG_C="${PREG_C:0:500}"
+    BORR_C="${BORR_C:0:800}"
+    SENS_C="${SENS_C:0:900}"
+
+    if ! curl -sf --max-time 1 "http://${HOST}:${PUERTO}/health" >/dev/null 2>/dev/null; then
+        printf 'OK\tok\n'
+        exit 0
+    fi
+
+    SYS_CRIT="Eres un auditor externo estricto que revisa la respuesta de otro asistente. Comprueba si el borrador responde a la pregunta del usuario y coincide con el dato real del sensor (si existe). Si responde bien sin inventar ni contradecir el sensor, responde exactamente: OK. Si invento datos, contradijo el sensor, ignoro la pregunta o tiene un error claro, responde en una sola linea: CORREGIR: <fallo concreto en pocas palabras>."
+    if [[ -n "$SENS_C" ]]; then
+        TXT_CRIT="Pregunta del usuario: ${PREG_C}
+Dato real del sensor: ${SENS_C}
+Borrador de respuesta: ${BORR_C}"
+    else
+        TXT_CRIT="Pregunta del usuario: ${PREG_C}
+Borrador de respuesta: ${BORR_C}"
+    fi
+
+    PAYLOAD_CRIT=$(jq -a -n --arg sys "$SYS_CRIT" --arg u "$TXT_CRIT" '{
+        messages: [
+            {"role": "system", "content": $sys},
+            {"role": "user", "content": $u}
+        ],
+        temperature: 0.0,
+        max_tokens: 48
+    }')
+
+    RESP_CRIT=$(curl -sf --max-time "${TIMEOUT_AMIGDALA:-8}" "$URL" -H "Content-Type: application/json" -d "$PAYLOAD_CRIT" 2>/dev/null)
+    if [[ -z "$RESP_CRIT" ]]; then
+        printf 'OK\tok\n'
+        exit 0
+    fi
+
+    OUT_CRIT=$(jq -r '
+        (.choices[0].message.content // "") as $raw |
+        ($raw | gsub("[\r\n]+"; " ") | gsub("^[[:space:]]+|[[:space:]]+$"; "") | gsub("\t"; " ")) as $clean |
+        ($clean | ascii_downcase) as $low |
+        if ($low | test("^corregir")) then
+            ($clean | sub("^[Cc][Oo][Rr][Rr][Ee][Gg][Ii][Rr][[:space:]:,-]*"; "") | .[0:220]) as $mot |
+            if ($mot | length) > 0 then "CORREGIR\t\($mot)" else "CORREGIR\trespuesta inexacta" end
+        else
+            "OK\tok"
+        end
+    ' < <(printf '%s' "$RESP_CRIT") 2>/dev/null)
+
+    if [[ -z "$OUT_CRIT" ]]; then
+        printf 'OK\tok\n'
+    else
+        printf '%s\n' "$OUT_CRIT"
+    fi
+    exit 0
+fi
+
+if [[ "$MODO" == "tono" ]]; then
+    MSG_U="$1"
+    PREV_A="$2"
+    if [[ -z "$MSG_U" ]]; then
+        printf '0\tneutro\n'
+        exit 0
+    fi
+    MSG_U="${MSG_U:0:500}"
+    PREV_A="${PREV_A:0:400}"
+
+    if ! curl -sf --max-time 1 "http://${HOST}:${PUERTO}/health" >/dev/null 2>/dev/null; then
+        printf '0\tneutro\n'
+        exit 0
+    fi
+
+    SYS_TONO="Clasifica el tono emocional real del mensaje del usuario hacia un asistente (detectando sarcasmo, ironia, quejas, correcciones, enfado, o elogios). Responde SOLO en una linea: POSITIVO, NEUTRO o NEGATIVO seguido de una palabra de matiz (ejemplos: NEGATIVO sarcasmo, NEGATIVO queja, NEGATIVO correccion, POSITIVO elogio, NEUTRO consulta)."
+    if [[ -n "$PREV_A" ]]; then
+        TXT_TONO="Respuesta previa del asistente: ${PREV_A}
+Mensaje actual del usuario: ${MSG_U}"
+    else
+        TXT_TONO="Mensaje actual del usuario: ${MSG_U}"
+    fi
+
+    PAYLOAD_TONO=$(jq -a -n --arg sys "$SYS_TONO" --arg u "$TXT_TONO" '{
+        messages: [
+            {"role": "system", "content": $sys},
+            {"role": "user", "content": $u}
+        ],
+        temperature: 0.0,
+        max_tokens: 16
+    }')
+
+    RESP_TONO=$(curl -sf --max-time "${TIMEOUT_AMIGDALA:-8}" "$URL" -H "Content-Type: application/json" -d "$PAYLOAD_TONO" 2>/dev/null)
+    if [[ -z "$RESP_TONO" ]]; then
+        printf '0\tneutro\n'
+        exit 0
+    fi
+
+    OUT_TONO=$(jq -r '
+        (.choices[0].message.content // "") as $raw |
+        ($raw | gsub("[\r\n]+"; " ") | gsub("^[[:space:]]+|[[:space:]]+$"; "")) as $clean |
+        ($clean | ascii_downcase) as $low |
+        (
+            if ($low | test("negativo|sarcasmo|ironia|enfado|queja|malo")) then -1
+            elif ($low | test("positivo|elogio|gracias|bien|excelente|genial")) then 1
+            else 0
+            end
+        ) as $val |
+        (
+            ($low | gsub("^(positivo|negativo|neutro)[[:space:]:,-]*"; "") | split(" ")[0] // "") |
+            gsub("á"; "a") | gsub("é"; "e") | gsub("í"; "i") | gsub("ó"; "o") | gsub("ú"; "u") | gsub("ñ"; "n") |
+            gsub("[^a-z0-9_-]"; "")
+        ) as $mat |
+        (if ($mat | length) > 0 then $mat elif $val < 0 then "negativo" elif $val > 0 then "positivo" else "neutro" end) as $mfin |
+        "\($val)\t\($mfin)"
+    ' < <(printf '%s' "$RESP_TONO") 2>/dev/null)
+
+    if [[ -z "$OUT_TONO" ]]; then
+        printf '0\tneutro\n'
+    else
+        printf '%s\n' "$OUT_TONO"
+    fi
+    exit 0
 fi
 
 TEXTO="$*"

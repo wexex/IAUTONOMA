@@ -43,7 +43,8 @@ Sus capacidades principales incluyen:
 * **Memoria jerárquica en tres capas temporales más índice procedimental:** hipocampo de corto plazo, memoria episódica particionada y memoria persistente con promoción automática y olvido exponencial en tiempo real.
 * **Reconsolidación, destilación atómica y plasticidad vectorial (LTP / LTD):** evolución de la dirección vectorial y refuerzo sináptico ante confirmaciones (`sim >= 0.80`), destilación en segundo plano de hechos atómicos (`atomico: 1`) para la capa episódica omitiendo saludos vacíos, y atenuación gradual de recuerdos desplazados por divergencia (`0.52 <= sim < 0.80`) sin listas de palabras fijas.
 * **Enrutamiento híbrido escalable de módulos y adaptadores LoRA:** indexación incremental con verificación por `cksum`, selección híbrida Top-K (`Coseno + Léxico + RRF k=20`) con precedencia de módulos por margen sobre la mediana (`Score Gap`) y conmutación dinámica por demanda de adaptadores LoRA locales vía `POST /lora-adapters` (`llama-server`).
-* **Gestión autónoma de recursos y consolidación durante el sueño (`DESPERTAR/DORMIR`):** arranque bajo demanda de los servidores de lenguaje y embeddings, percepción temporal de inactividad, suspensión automática con liberación de GPU/RAM y consolidación pausable de la memoria persistente y procedimental en adaptadores LoRA particionados en 3 fases (Ligero, Profundo y REM en sandbox físico efímero `SUEÑO/` con examen de doble rol).
+* **Gestión autónoma de recursos, equilibrado dinámico RAM/VRAM (`DESPERTAR/EQUILIBRIO`) y consolidación durante el sueño (`DESPERTAR/DORMIR`):** arranque bajo demanda de lenguaje, embeddings y amígdala ajustando automáticamente las capas en GPU (`-ngl`) e hilos de CPU según el tamaño real del GGUF (`block_count`), la VRAM y la RAM libres; percepción temporal de inactividad, suspensión automática con liberación de GPU/RAM y consolidación pausable de la memoria persistente y procedimental en adaptadores LoRA particionados en 3 fases (Ligero, Profundo con equilibrio adaptativo `--entrenar` bajo `nice` y REM en sandbox físico efímero `SUEÑO/` con examen de doble rol).
+* **Subsistema de Amígdala en cuatro fases (`AMIGDALA` + `DESPERTAR/AMIGDALA` + `MEMORIA/amigdala.json`):** aduana de seguridad y contenido externo con `Qwen3Guard-Gen-0.6B` (`:8083`), detección de tono y sarcasmo en segundo plano (`--tono`, `0 ms` en chat) con castigo retroactivo en hipocampo, crítico desacoplado *Blind Spot* activado por incertidumbre (*UTD*, `--critico`) y señal neuromoduladora global que ajusta temperatura/cautela en `AGENTE`, curva de olvido por relevancia en `OLVIDO` y prioridad de entrenamiento en `DORMIR`.
 
 ---
 
@@ -52,7 +53,7 @@ Sus capacidades principales incluyen:
 1. **Separación entre cognición y soporte operativo:** el código proporciona memoria, contexto temporal y herramientas ejecutables, pero no impone respuestas predefinidas ni intercepta el lenguaje natural mediante reglas condicionales fijas.
 2. **Enrutamiento y plasticidad puramente semánticos:** la recuperación de recuerdos, la reconsolidación (LTP), la atenuación por divergencia (LTD) y el filtrado de módulos se calculan exclusivamente por geometría vectorial (`Qwen3-Embedding-0.6B`, `1024` dimensiones), sin etiquetas ni listas léxicas.
 3. **Minimalismo e inspeccionabilidad:** toda la memoria y los registros se persisten en texto plano y JSON Lines (JSONL) con escritura atómica (`*.$$.tmp`), facilitando la auditoría directa sin herramientas propietarias.
-4. **Operación local y eficiencia de hardware:** el modelo de lenguaje corre acelerado en GPU con caché KV cuantizada (`q8_0`) y Flash Attention, mientras que el modelo de embeddings corre en CPU (`-ngl 0`) para no competir por VRAM, y el proceso de olvido opera sin requerir ningún servidor LLM activo.
+4. **Operación local y equilibrado dinámico de hardware:** al despertar cada servicio, `DESPERTAR/EQUILIBRIO` inspecciona la VRAM libre (`nvidia-smi`), la RAM disponible (`/proc/meminfo`) y las capas reales del archivo GGUF (`block_count`) para repartir automáticamente el trabajo entre GPU (`-ngl 99`), modo híbrido (`-ngl N`) o RAM (`-ngl 0`), mientras `DESPERTAR/DORMIR` adapta hilos y prioridad (`nice -n 10`) antes de cada ciclo de entrenamiento y `OLVIDO` opera sin requerir ningún servidor LLM activo.
 
 ---
 
@@ -63,21 +64,30 @@ flowchart TD
     U["Usuario (CHAT / CLI)"] --> E["ENTRADA (Orquestador)"]
 
     subgraph Ciclo["Servicios y Ciclo de Vida (DESPERTAR/)"]
-        L["LENGUAJE :8081<br/>llama-server Chat (GPU)"]
-        M["MEMORIA :8082<br/>llama-server Embeddings (CPU)"]
+        EQ["EQUILIBRIO<br/>Reparto dinámico VRAM/RAM e hilos"]
+        L["LENGUAJE :8081<br/>llama-server Chat (Auto GPU/RAM)"]
+        M["MEMORIA :8082<br/>llama-server Embeddings (Auto GPU/RAM)"]
+        AM["AMIGDALA :8083<br/>Qwen3Guard-Gen-0.6B (Auto GPU/RAM)"]
         AB["ABURRIMIENTO<br/>Monitor de inactividad y sueño"]
         DO["DORMIR<br/>Ligero -> Profundo (LoRA) -> REM (SUEÑO/)"]
-        OL["OLVIDO<br/>Demonio de decaimiento + 4 logs"]
+        OL["OLVIDO<br/>Demonio de decaimiento modulado + 4 logs"]
     end
 
+    E -->|"Calcula -ngl e hilos"| EQ
     E -->|"Arranque bajo demanda"| L
     E -->|"Arranque bajo demanda"| M
+    E -->|"Arranque bajo demanda"| AM
     E -->|"Actualiza actividad / Pausa sueño"| AB
     E -.->|"Señal despertar (checkpoint)"| DO
-    AB -->|"Al dormir (apaga :8081/:8082)"| DO
+    AB -->|"Al dormir (apaga :8081/:8082/:8083)"| DO
+    DO -.->|"Equilibrio CPU/RAM (--entrenar)"| EQ
     DO -.->|"Consolida pesos y vacía teoría"| PE
     DO -.->|"Exporta LoRA + centroide"| LO
-    E --> A["AGENTE<br/>Recuperación + Bucle iterativo (hasta 5 pasos)"]
+    E --> A["AGENTE<br/>Recuperación + Bucle iterativo + Crítico UTD"]
+    A <-->|"Aduana entrada / Crítico"| AMS["AMIGDALA<br/>--entrada / --comando / --externo / --tono / --critico"]
+    E -->|"--tono en segundo plano (0 ms)"| AMS
+    AMS <--> AM
+    AMS <--> L
 
     subgraph MEM["Almacenamiento Vectorial (MEMORIA/)"]
         H["hipocampo.json<br/>Corto plazo (24 h)"]
@@ -109,9 +119,9 @@ flowchart TD
 
 ### Flujo de una interacción
 
-1. **Recepción y vigilia (`ENTRADA`):** registra la marca temporal de actividad. Si los servicios en `:8081` o `:8082` están detenidos, los inicia en segundo plano con `setsid`, espera confirmación HTTP 200 en `/health`, verifica `ABURRIMIENTO` y envía el estímulo interno `<<Te despiertas>>` antes de atender la consulta.
-2. **Recuperación híbrida, precedencia de módulos y razonamiento (`AGENTE`):** limpia el prefijo `[FECHA] <<...>> ` de despertar si está presente, vectoriza la consulta y evalúa `MODULO_DOMINANTE` (`s1 >= UMBRAL_MODULO` y `s1 - mediana >= UMBRAL_GAP_MODULO`, re-evaluando con `(q + h)` si el turno previo fue una herramienta para resolver peticiones anafóricas). Si un módulo domina, silencia Episódica/Persistente y los saludos del hilo para evitar conflictos herramienta-memoria; en caso contrario ejecuta la cascada híbrida (`Coseno + Léxico + RRF`) por cadena de fases (`uh -> ue -> up`), activa `reloj.json` automáticamente ante cambios de estado (`despertar`, `silencio`, `dormir`), conmuta las escalas de `LORA/` vía `POST /lora-adapters`, solicita a `HERRAMIENTAS/bash --spec` los módulos más afines y ejecuta el bucle agéntico contra `LENGUAJE`.
-3. **Reconsolidación, hechos atómicos y registro (`ENTRADA`):** registra el turno en `REGISTROS/historial.log` y lanza la consolidación en segundo plano (`--consolidar` con bloqueo atómico `LOCK_MEMORIA`), devolviendo el control de terminal inmediatamente en `CHAT`. Durante la consolidación vectoriza el par interacción-respuesta con fecha exacta (`YYYY-MM-DD HH:MM:SS`), aplica LTP/LTD en el hipocampo preservando `.sensor` en fusiones, destila los turnos declarativos en un hecho atómico limpio (`atomico: 1`) antes de guardar en episódica (omitiendo saludos vacíos `NINGUNO`) y promueve a largo plazo si alcanza `>= 0.99`. En estímulos internos (`--interno`), la consolidación se mantiene síncrona antes de suspender los servidores.
+1. **Recepción, vigilia y equilibrado (`ENTRADA`):** registra la marca temporal de actividad. Si los servicios en `:8081`, `:8082` o `:8083` están detenidos, consulta `DESPERTAR/EQUILIBRIO` antes de `setsid` para calcular `-ngl` e hilos de CPU en tiempo real, los inicia pasando el reparto por argumentos posicionales, espera confirmación HTTP 200 en `/health`, verifica `ABURRIMIENTO` y antepone `<<Te despiertas>>` si acaba de salir de reposo.
+2. **Aduana, recuperación híbrida, razonamiento y crítico *UTD* (`AGENTE`):** limpia el prefijo `[FECHA] <<...>> ` en Bash puro, evalúa el riesgo semántico de la entrada vía `AMIGDALA --entrada` (`:8083`), ajusta temperatura (`0.0`) y cautela si hay alerta o frustración previa, vectoriza la consulta y evalúa `MODULO_DOMINANTE` (`s1 >= UMBRAL_MODULO` y `s1 - mediana >= UMBRAL_GAP_MODULO`, re-evaluando con `(q + h)` si el turno previo fue una herramienta para resolver peticiones anafóricas). Si un módulo domina, silencia Episódica/Persistente y los saludos del hilo; en caso contrario ejecuta la cascada híbrida (`Coseno + Léxico + RRF`) por cadena de fases (`uh -> ue -> up`), activa `reloj.json` ante cambios de estado, conmuta `LORA/` vía `POST /lora-adapters`, consulta `HERRAMIENTAS/bash --spec` y ejecuta el bucle agéntico (bloqueando herramientas si la entrada activó `UNSAFE`). Antes de entregar la respuesta, si hubo alerta, frustración previa o reintentos (`PASO > 2`), dispara `AMIGDALA --critico` (*Blind Spot* + *UTD*) con hasta `1` pasada de refinamiento y actualiza `MEMORIA/amigdala.json`.
+3. **Evaluación emocional en segundo plano, reconsolidación y hechos atómicos (`ENTRADA`):** registra el turno en `REGISTROS/historial.log` y lanza `--consolidar` en segundo plano con bloqueo atómico `LOCK_MEMORIA`, devolviendo el control de terminal al instante en `CHAT`. En segundo plano (`0 ms` de espera para el usuario) ejecuta `AMIGDALA --tono` para detectar sarcasmo, quejas o elogios (aplicando feedback retroactivo `valencia: -1` y norma `0.65x` sobre el turno previo reciente en `hipocampo.json` si detecta queja/sarcasmo), vectoriza el turno, aplica LTP/LTD preservando `.sensor`, destila hechos atómicos (`atomico: 1`) para `Episódica` (omitiendo saludos vacíos `NINGUNO`) y promueve a largo plazo si alcanza `>= 0.99`. En estímulos internos (`--interno`), la consolidación se mantiene síncrona antes de suspender los servidores.
 
 ---
 
@@ -123,7 +133,7 @@ Cada recuerdo se almacena como un objeto JSON con marca temporal, mensajes `user
 | :--- | :--- | :--- | :--- | :--- |
 | **Hipocampo** | `MEMORIA/hipocampo.json` | Hilo inmediato (`MAX_HILO=2`) + hasta `3` similares (`MAX_HIPOCAMPO`) | `24 horas` | Recuperación híbrida en cascada (`uh = 0.52`), respaldo vectorial continuo y memoria sensorial reciente (`sensor`) de salidas reales de herramientas durante `VIGENCIA_HERRAMIENTA` (`300` s), preservada en fusiones LTP. |
 | **Reloj biológico** | `MEMORIA/reloj.json` | Últimos `100` eventos, hasta `2` recuperados (`MAX_RELOJ`) | Sin decaimiento (excluido de LoRA) | Registra `<<Te despiertas>>`, `<<Todo esta en silencio>>`, `<<Te duermes>>` y consolidaciones de sueño; se activa automáticamente como conciencia de estado en el primer turno de cambio de estado (filtrando `silencio` al despertar) y por similitud en preguntas sobre el ciclo biológico. |
-| **Amígdala interoceptiva** | `MEMORIA/amigdala.json` | Registro único de estado relativo | Sin decaimiento (excluido de LoRA) | Registra la media móvil de latencia (`lat_media_ms`), la fatiga relativa (`lat_actual / lat_media_ms`), la frustración consecutiva (`0..MAX_FRUSTRACION`) y la valencia del último turno (`+1 / 0 / -1`) sin sensores de hardware fijos. |
+| **Amígdala (4 fases)** | `MEMORIA/amigdala.json` | Registro único de estado global | Sin decaimiento (excluido de LoRA) | Registra interocepción (`lat_media_ms`, `fatiga`, `frustracion`, `ultima_valencia`), alertas de seguridad (`alerta`, `alerta_motivo`), tono emocional (`tono_usuario`, `valencia_emocional`) y actividad del crítico (`critico_disparado`, `critico_corrigio`, `critico_motivo`). |
 | **Episódica** | `episodica_*.json` + `indice_episodica.json` | Particiones temáticas (`100` líneas por partición) | `7 días` (`24*7` h) | Almacena hechos atómicos (`atomico: 1`) y trazas de medio plazo indexados por centroides unitarios con umbral de fase `ue = 0.59`. |
 | **Persistente** | `persistente_*.json` + `indice_persistente.json` | Particiones temáticas (`100` líneas por partición) | `1 año` (`24*365` h) | Consolida recuerdos recurrentes promovidos automáticamente al alcanzar norma `>= 0.99`, con umbral de recuperación de fase `up = 0.66`. |
 | **Procedimental (trazas)** | `procedimental_*.json` + `indice_procedimental.json` | Particiones temáticas (`100` líneas por partición) | Alimenta a `DORMIR` | Captura trazas completas (`tool_calls` + `role: "tool"`) separadas de la memoria declarativa para entrenar uso y lectura de módulos en sueño sin cachear datos volátiles. |
@@ -132,11 +142,16 @@ Cada recuerdo se almacena como un objeto JSON con marca temporal, mensajes `user
 
 ### Mecánicas de consolidación, refuerzo y decaimiento
 
-* **Decaimiento exponencial continuo (`DESPERTAR/OLVIDO`):** se ejecuta automáticamente en segundo plano vigilado y auto-recuperado por `ENTRADA`, `ABURRIMIENTO` y `DORMIR` (y solo se detiene si existe `MEMORIA/OLVIDO_PARADA`). En ciclos configurables (`INTERVALO_OLVIDO="15"` segundos) procesa todas las capas en una sola pasada `jq` + `awk` aplicando el factor exacto de atenuación ($d^{\Delta t}$, persistiendo el último tick en `REGISTROS/olvido.ts`), respetando `LOCK_MEMORIA`, eliminando entradas `< 0.52`, purgando particiones vacías y manteniendo actualizados los 4 registros en `REGISTROS/OLVIDO/` (`hipocampo.log`, `episodica.log`, `persistente.log` y `olvidado.log`). Por su parte, las preparaciones y entrenamientos LoRA quedan trazados en `REGISTROS/lora_entrenar.log`.
+* **Decaimiento exponencial continuo modulado por relevancia (`DESPERTAR/OLVIDO`):** se ejecuta automáticamente en segundo plano vigilado y auto-recuperado por `ENTRADA`, `ABURRIMIENTO` y `DORMIR` (y solo se detiene si existe `MEMORIA/OLVIDO_PARADA`). En ciclos configurables (`INTERVALO_OLVIDO="15"` segundos) procesa todas las capas en una sola pasada `jq` + `awk` aplicando el factor exacto de atenuación ($d^{\Delta t}$, persistiendo el último tick en `REGISTROS/olvido.ts`) modulado por la `valencia` de la Amígdala: recuerdos positivos (`valencia > 0`) decaen un `40%` más lento ($d^{0.6}$), neutros (`0`) siguen la curva base ($d$) y negativos (`valencia < 0`) decaen al doble de velocidad ($d^2$). Respeta `LOCK_MEMORIA`, elimina entradas `< 0.52`, purga particiones vacías y mantiene actualizados los 4 registros en `REGISTROS/OLVIDO/` (`hipocampo.log`, `episodica.log`, `persistente.log` y `olvidado.log`). Por su parte, las preparaciones y entrenamientos LoRA quedan trazados en `REGISTROS/lora_entrenar.log` y el reparto de hardware en `REGISTROS/equilibrio.log`.
 * **Reconsolidación y potenciación sináptica (LTP, `sim >= 0.80`):** al guardar un turno en el hipocampo o en una partición temática, si existe un recuerdo previo con similitud coseno `>= UMBRAL_REFUERZO` (`0.80`), se fusiona actualizando contenido, fecha, **dirección vectorial al nuevo turno** y preservando `.sensor` si el nuevo turno no genera una salida nueva, y se refuerza su norma multiplicándola por `FACTOR_REFUERZO` (`1.10`, acotada a `1.0`). El refuerzo de norma se aplica igualmente al recuerdo ganador durante la recuperación en `AGENTE`.
 * **Depresión sináptica por colisión y divergencia (LTD, `0.52 <= sim_T < 0.80`) y habituación anti-loro:** cada turno se vectoriza en una única petición por lote obteniendo tres vectores: turno completo (`embedding`), entrada (`emb_u`) y respuesta (`emb_a`). Cuando el nuevo turno cae en la franja `0.52 <= sim_T < 0.80` con divergencia asimétrica entre entrada y respuesta (rectificación o cambio de atributo), o cuando el modelo repite la misma respuesta ante una entrada diferente (`sim_A >= 0.90` con `sim_U < 0.80`, habituación), el sistema atenúa el recuerdo previo en conflicto a `DECAIMIENTO_CASTIGO` (`1 hora` de vida residual antes de `0.52`). Los recuerdos deprimidos por LTD quedan por debajo del **potencial de disparo** en `AGENTE` (no se inyectan al prompt ni se refuerzan mientras `OLVIDO` completa su poda). Si por el contrario se trata de un subtema complementario del mismo ámbito, ambos recuerdos coexisten sin atenuarse.
 * **Destilación de hechos atómicos (`atomico: 1`):** durante `--consolidar` en `ENTRADA`, los turnos declarativos (`herramienta: 0` y longitud `>= 15` caracteres) se sintetizan en segundo plano en una sola frase objetiva en tercera persona sin saludos ni emojis antes de escribirse en `Episódica`, re-vectorizando el hecho limpio. Si el turno es solo un saludo o charla sin hechos concretos (`NINGUNO`), se conserva en `Hipocampo` para el hilo inmediato pero no contamina `Episódica`.
-* **Amígdala sobre el hipocampo (valencia, frustración y fatiga intrínseca):** en `AGENTE`, cada turno mide su propia latencia relativa frente a la media móvil (`MEMORIA/amigdala.json`) y evalúa la valencia de las herramientas (`+1` acierto limpio, `-1` error o repetición). Al alcanzar `MAX_FRUSTRACION` (`3`) fallos consecutivos corta el bucle y pide aclaración al usuario; en el hipocampo oculta los recuerdos con `valencia == -1` para evitar repetir el mismo error. En `ENTRADA`, los turnos con `valencia == -1` reciben norma reducida (`PESO_INICIAL * 0.65`) y no se guardan en `procedimental_*.json` para no contaminar futuros sueños. En `DESPERTAR/DORMIR`, si un ciclo tarda `>= 2` veces su media previa (`sueno_media_s`), introduce una micro-pausa de descanso de `10` s comprobando `despertar.senal`.
+* **Subsistema de Amígdala en 4 fases (`AMIGDALA` + `DESPERTAR/AMIGDALA` + `MEMORIA/amigdala.json`):**
+  * **Interocepción (Capa 1):** mide latencia relativa frente a la media móvil (`fatiga`), cuenta fallos consecutivos cortando bucles al alcanzar `MAX_FRUSTRACION` (`3`), oculta recuerdos con `valencia < 0` en el hipocampo e introduce una micro-pausa de `10` s en `DORMIR` si un ciclo tarda `>= 2` veces su media (`sueno_media_s`).
+  * **Fase 1 — Aduana de seguridad y contenido externo (`:8083`, `Qwen3Guard-Gen-0.6B`):** clasifica entradas (`--entrada`), comandos compuestos (`--comando`) y salidas externas extensas (`--externo`, `>= 80` caracteres). Si la entrada dispara `UNSAFE`, bloquea la ejecución de herramientas antes de tocar el sistema; si una salida externa o web dispara `UNSAFE`/`CONTROVERSIAL`, la envuelve con `[AMIGDALA_ALERTA:...]` para aislar inyecciones de prompt y excluye la traza del aprendizaje procedimental.
+  * **Fase 2 — Tono emocional y sarcasmo en segundo plano (`--tono`, `0 ms` en chat):** en `ENTRADA --consolidar`, una llamada aislada clasifica el tono del usuario respecto al último turno (`+1` elogio, `0` neutro, `-1` sarcasmo/queja/corrección). Ante tono negativo aplica feedback retroactivo sobre el turno previo reciente (`<= 600` s) en `hipocampo.json` (`valencia: -1`, norma `0.65x`) y frena su ascenso a `procedimental`.
+  * **Fase 3 — Crítico desacoplado *Blind Spot* + *UTD* (`--critico`):** en `AGENTE` solo se activa cuando existe duda real (`alerta == 1`, `frustracion >= 1` previa o reintentos de herramienta `PASO > 2`; `0 ms` en turnos normales). Audita `Pregunta + Sensor real + Borrador` sin identidad propia; si responde `CORREGIR`, realiza como máximo `1` pasada de refinamiento antes de mostrar y memorizar la respuesta (*Reflexion*).
+  * **Fase 4 — Neuromodulación global:** fija `temperature: 0.0` e inyecta cautela en `AGENTE` bajo alerta o frustración; modula la tasa de olvido en `DESPERTAR/OLVIDO` según `valencia` (`d^0.6` positivos, `d^2` negativos); y en `DESPERTAR/DORMIR` excluye `valencia < 0` y prioriza recuerdos confirmados (`valencia > 0`, bonus `+0.15`) al seleccionar el cupo del LoRA.
 * **Promoción automática a largo plazo:** cualquier recuerdo de la capa episódica que alcance o supere `UMBRAL_PERSISTENTE` (`0.99`) —ya sea por repetición o por consulta frecuente— se promueve automáticamente a la capa persistente.
 * **Control de volatilidad en herramientas y estímulos internos (`herramienta: 1`):** los turnos originados por ejecuciones de herramientas (`[bash:...]`) o estímulos de vigilia (`--interno`) reciben la marca hereditaria `herramienta: 1`. Estos recuerdos mantienen su norma acotada en `PESO_INICIAL` (`0.85`) sin sobre-reforzarse, tienen bloqueado su ascenso a la capa `persistente` y, cuando caducan (`> 300` s o vigilia anterior), se ocultan para forzar ejecución en tiempo real.
 * **Cadena de umbrales por fase, búsqueda híbrida (RRF) y precedencia de módulos (`AGENTE`):**
@@ -159,21 +174,21 @@ donde $d$ es el factor de atenuación aplicado cada segundo por `DESPERTAR/OLVID
 
 La gestión de disponibilidad, consumo de recursos y consolidación en pesos se coordina entre `ENTRADA`, `DESPERTAR/ABURRIMIENTO` y `DESPERTAR/DORMIR` a partir de `TIEMPO_DESPIERTO` (`300` segundos por defecto):
 
-1. **Despertar inducido por estímulo (*Sensory-Evoked Arousal*):** ante cualquier petición con el sistema en reposo, `ENTRADA` comprueba primero si `DESPERTAR/DORMIR` está activo; si lo está, emite `REGISTROS/despertar.senal` para que el entrenador guarde su checkpoint atómico y salga limpiamente en el paso exacto actual. A continuación arranca `LENGUAJE` (`:8081`), `MEMORIA` (`:8082`) y `ABURRIMIENTO`, espera confirmación en `/health` y antepone `<<Te despiertas>>` a la petición del usuario en el mismo turno.
+1. **Despertar inducido por estímulo (*Sensory-Evoked Arousal*) y equilibrado (`DESPERTAR/EQUILIBRIO`):** ante cualquier petición con el sistema en reposo, `ENTRADA` comprueba primero si `DESPERTAR/DORMIR` está activo; si lo está, emite `REGISTROS/despertar.senal` para que el entrenador guarde su checkpoint atómico y salga limpiamente en el paso exacto actual. A continuación consulta `DESPERTAR/EQUILIBRIO` para calcular el reparto óptimo entre VRAM y RAM (`-ngl` e hilos `-t` leyendo el `block_count` del GGUF, `nvidia-smi` y `/proc/meminfo` con colchón del `10%`, mín. `320` MiB), arranca `LENGUAJE` (`:8081`), `MEMORIA` (`:8082`), `AMIGDALA` (`:8083`) y `ABURRIMIENTO`, espera confirmación en `/health` y antepone `<<Te despiertas>>` a la petición del usuario en el mismo turno.
 2. **Umbral intermedio de inactividad (`50%` de `TIEMPO_DESPIERTO`, Red por Defecto / DMN):** si no se registra actividad tras `150` segundos, `ABURRIMIENTO` envía `--interno "<<Todo esta en silencio>>"` sin reiniciar el temporizador; `AGENTE` genera un pensamiento propio en primera persona sin herramientas externas y lo almacena con su marca temporal.
-3. **Suspensión, reflejo hípnico y entrada en sueño (`100%` de `TIEMPO_DESPIERTO`):** al alcanzar `300` segundos sin actividad, `ABURRIMIENTO` envía `--interno "<<Te duermes>>"` y ejecuta la comprobación de estabilidad previa al sueño (`reflejo_hipnico`): espera hasta `15` s si existe una consolidación activa (`LOCK_MEMORIA`), valida la integridad JSONL de `hipocampo.json`, `reloj.json` e `indice_procedimental.json` y realiza una doble verificación de `ULTIMA_INTERACCION`. Si detecta escritura activa, JSON truncado o actividad concurrente, aborta la suspensión y permanece despierto; si el estado es estable, detiene `:8081` y `:8082` liberando GPU/RAM y lanza en segundo plano `DESPERTAR/DORMIR` mientras `OLVIDO` sigue operando de forma independiente.
+3. **Suspensión, reflejo hípnico y entrada en sueño (`100%` de `TIEMPO_DESPIERTO`):** al alcanzar `300` segundos sin actividad, `ABURRIMIENTO` envía `--interno "<<Te duermes>>"` y ejecuta la comprobación de estabilidad previa al sueño (`reflejo_hipnico`): espera hasta `15` s si existe una consolidación activa (`LOCK_MEMORIA`), valida la integridad JSONL de `hipocampo.json`, `reloj.json` e `indice_procedimental.json` y realiza una doble verificación de `ULTIMA_INTERACCION`. Si detecta escritura activa, JSON truncado o actividad concurrente, aborta la suspensión y permanece despierto; si el estado es estable, detiene `:8081`, `:8082` y `:8083` liberando GPU/RAM y lanza en segundo plano `DESPERTAR/DORMIR` mientras `OLVIDO` sigue operando de forma independiente.
 
 ### Consolidación en sueño (`DESPERTAR/DORMIR`: Ligero -> Profundo -> REM)
 
 El mecanismo de sueño transfiere de forma progresiva tanto el conocimiento declarativo (`MEMORIA/persistente_*.json` -> `sueno_<k>.gguf`) como el conocimiento procedimental de herramientas (`MEMORIA/procedimental_*.json` -> `sueno_herr_<k>.gguf`) usando la misma lógica vectorial de organización y particionado que la memoria, sin sobrescribir adaptadores previos ni truncar descripciones por longitud de caracteres:
 
-1. **Sueño Ligero (N1/N2 — Solo prepara):** inspecciona tareas pausadas en `MEMORIA/SUENO/` y particiones nuevas tanto declarativas (`persistente_*.json`) como procedimentales (`procedimental_*.json`) con al menos `MIN_RECUERDOS_SUENO` (`3`) recuerdos válidos, aplicando **secuenciación *round-robin*** (`MEMORIA/SUENO/ultimo_turno`). Calcula el **centroide vectorial unitario real** de la partición y comprueba en `LORA/DATASETS/indice.json` si ya existe un LoRA de la misma clase (`sim >= UMBRAL_SIM`) por debajo de la mitad de su capacidad (`lineas < MAX_EJEMPLOS_LORA / 2`): si existe, **fusiona ambos datasets** (prevaleciendo rectificaciones recientes) y actualiza el centroide; si no existe o supera la mitad, abre una **partición correlativa nueva** (`sueno_<k>` o `sueno_herr_<k>`) de hasta `MAX_EJEMPLOS_LORA` (`10`) ejemplos sin sobrescribir nunca las anteriores.
-2. **Sueño Profundo (N3 — Solo entrena):** con `:8081` y `:8082` apagados, entrena sobre un candidato aislado (`candidato.gguf`, sin tocar el LoRA activo hasta validar) las capas superiores (`CAPA_INICIO_SUENO="18"` hasta `23`, `rank=4`, `alpha=16`) en CPU mediante `entrenar_lora.py --modules-dir`. Todos los recuerdos (tanto declarativos como procedimentales) se entrenan viendo las herramientas reales (`tools`) para que ningún adaptador de sueño inhiba el disparo de `tool_calls` al despertar, manteniendo `role: "tool"` enmascarado con `-100` para no fosilizar valores volátiles. Cachea en disco las capas congeladas `0..17` (`cache.pt`) y guarda un checkpoint atómico (`modelo.ckpt`) en **cada paso de optimizador** (pausable con `exit 42` ante `despertar.senal`).
+1. **Sueño Ligero (N1/N2 — Solo prepara):** inspecciona tareas pausadas en `MEMORIA/SUENO/` y particiones nuevas tanto declarativas (`persistente_*.json`) como procedimentales (`procedimental_*.json`) con al menos `MIN_RECUERDOS_SUENO` (`3`) recuerdos válidos (`valencia >= 0`), aplicando **secuenciación *round-robin*** (`MEMORIA/SUENO/ultimo_turno`), omitiendo particiones que hayan agotado todos sus ciclos sin aprobados en la sesión actual (`PARTS_FALLIDAS`) y priorizando recuerdos positivos (`valencia > 0`) en la selección del cupo. Calcula el **centroide vectorial unitario real** de la partición y comprueba en `LORA/DATASETS/indice.json` si ya existe un LoRA de la misma clase (`sim >= UMBRAL_SIM`) por debajo de la mitad de su capacidad (`lineas < MAX_EJEMPLOS_LORA / 2`): si existe, **fusiona ambos datasets** (prevaleciendo rectificaciones recientes) y actualiza el centroide; si no existe o supera la mitad, abre una **partición correlativa nueva** (`sueno_<k>` o `sueno_herr_<k>`) de hasta `MAX_EJEMPLOS_LORA` (`10`) ejemplos sin sobrescribir nunca las anteriores.
+2. **Sueño Profundo (N3 — Solo entrena con equilibrio adaptativo):** con `:8081`, `:8082` y `:8083` apagados, consulta `DESPERTAR/EQUILIBRIO --entrenar` antes de cada ciclo para adaptar `--threads` a la carga de CPU (`/proc/loadavg`) y RAM libre (`/proc/meminfo`) —usando todos los núcleos cuando el equipo está libre, reduciendo hilos bajo carga o aplicando una pausa preventiva de `15` s si la RAM libre cae por debajo del `22%`— y lanza `entrenar_lora.py --modules-dir` bajo prioridad baja (`nice -n 10`). Entrena sobre un candidato aislado (`candidato.gguf`, sin tocar el LoRA activo hasta validar) las capas superiores (`CAPA_INICIO_SUENO="18"` hasta `23`, `rank=4`, `alpha=16`) en CPU. Todos los recuerdos (tanto declarativos como procedimentales) se entrenan viendo las herramientas reales (`tools`) para que ningún adaptador de sueño inhiba el disparo de `tool_calls` al despertar, manteniendo `role: "tool"` enmascarado con `-100` para no fosilizar valores volátiles. Cachea en disco las capas congeladas `0..17` (`cache.pt`) y guarda un checkpoint atómico (`modelo.ckpt`) en **cada paso de optimizador** (pausable con `exit 42` ante `despertar.senal`).
 3. **Sueño REM (Solo testea — Sandbox físico efímero `SUEÑO/` + doble rol):** crea un directorio físico aislado `SUEÑO/` replicando el esqueleto base vacío del entorno (`DESPERTAR/`, `HERRAMIENTAS/`, `MODULOS/`, `LORA/DATASETS/`, `MEMORIA/`, `REGISTROS/`), reconstruye únicamente los ficheros, rutas y salidas presentes en los recuerdos evaluados (`mirar`, `listar`, `buscar_texto`, `identificar`, `escribir`, `editar`, etc.) y lo elimina automáticamente al terminar o despertar. Carga `LORA_BASE` y `candidato.gguf` con las mismas escalas efectivas que en vigilia (`LORA_ESCALA * 0.7` y `LORA_ESCALA * 0.8`), mientras un rol simulado lanza los prompts reales del recuerdo y el modelo responde asumiendo que `SUEÑO/` es real:
    * En **particiones declarativas** evalúa cada recuerdo con `tools` visibles esperando respuesta directa desde los pesos sin inventar llamadas (`sim >= UMBRAL_REFUERZO="0.80"`).
    * En **particiones procedimentales** ejecuta de verdad las operaciones locales de archivos/rutas confinadas dentro de `SUEÑO/` (bloqueando escapes, o devolviendo la salida exacta del recuerdo en módulos como `hora`, `fecha`, `maquina`, `meteo_*` o `buscar_internet`), comprobando módulo correcto y lectura fiel (`sim >= 0.80`).
    * **0 error:** promueve `candidato.gguf` a `LORA/<nombre>.gguf`, guarda el dataset en `LORA/DATASETS/`, actualiza su centroide real en `LORA/DATASETS/indice.json`, vacía de la capa origen (`persistente` o `procedimental`) los recuerdos absorbidos respetando `LOCK_MEMORIA` e invalida `MEMORIA/LORA/huella`.
-   * **Progreso parcial / Sobreajuste:** si mejora, guarda `best.ckpt`/`best.gguf` y suma épocas conservadoras; si empeora, hace *rollback* automático al mejor checkpoint reduciendo el `lr` a la mitad (`--reset-lr`). Al alcanzar `MAX_CICLOS_REM` (`4`), promueve el mejor LoRA si tiene aprobados y vacía únicamente los recuerdos aprobados individualmente.
+   * **Progreso parcial / Sobreajuste / Cortafuegos:** si mejora, guarda `best.ckpt`/`best.gguf` y suma épocas conservadoras; si empeora, hace *rollback* automático al mejor checkpoint reduciendo el `lr` a la mitad (`--reset-lr`). Al alcanzar `MAX_CICLOS_REM` (`4`), promueve el mejor LoRA si tiene aprobados y vacía únicamente los recuerdos aprobados individualmente; si termina con `0` aprobados, conserva el estado previo y registra la partición en `PARTS_FALLIDAS` para no reintentarla en bucle durante esa misma sesión de sueño.
 
 ---
 
@@ -204,9 +219,10 @@ El mecanismo de sueño transfiere de forma progresiva tanto el conocimiento decl
 
 ### Controles de seguridad y contención
 
-Antes de ejecutar cualquier instrucción en el subshell aislado, `HERRAMIENTAS/bash` aplica las siguientes medidas:
+Antes de ejecutar cualquier instrucción en el subshell aislado, `HERRAMIENTAS/bash` y `AGENTE` aplican las siguientes medidas combinadas:
 
 * **Bloqueo preventivo de comandos destructivos:** rechaza patrones de borrado recursivo crítico (`rm -rf` sobre `/`, `/*`, `~`, `*`, `--no-preserve-root`), formateo o escritura directa en dispositivos (`mkfs`, `dd if=`, redirección a `/dev/sd*` o `/dev/nvme*`), bombas fork, cambios masivos de permisos (`chmod -R 777 /`), comandos de apagado/reinicio (`shutdown`, `reboot`, `poweroff`) y ejecución en segundo plano mediante `&`.
+* **Aduana neuronal (`AMIGDALA` + `Qwen3Guard-Gen-0.6B` en `:8083`):** inspecciona entradas, comandos compuestos (`--comando`) y salidas externas de `>= 80` caracteres (`--externo`, como resultados web). Bloquea la ejecución de herramientas si la entrada dispara `UNSAFE` y marca el contenido externo sospechoso con `[AMIGDALA_ALERTA:...]` para neutralizar inyecciones indirectas de prompt.
 * **Aislamiento y acotación de recursos:** cada invocación se ejecuta en una instancia `bash -c` aislada con límite de tiempo (`20` segundos) y truncado estricto de salida a `4000` bytes (`head -c 4000`) para proteger la ventana de contexto (`4096` tokens).
 
 ---
@@ -217,16 +233,19 @@ Antes de ejecutar cualquier instrucción en el subshell aislado, `HERRAMIENTAS/b
 IAUTONOMA/
 ├── CONFIG                  # Configuración centralizada (modelos, puertos, umbrales y tiempos)
 ├── CHAT                    # Interfaz conversacional de terminal con historial
-├── ENTRADA                 # Orquestador principal: vigilia, reconsolidación (LTP/LTD) y logs
-├── AGENTE                  # Motor de inferencia, recuperación vectorial y bucle iterativo
+├── ENTRADA                 # Orquestador principal: vigilia, equilibrio, tono emocional y reconsolidación (LTP/LTD)
+├── AGENTE                  # Motor de inferencia, recuperación vectorial, bucle iterativo y crítico UTD
+├── AMIGDALA                # Evaluador de seguridad (--entrada/--comando/--externo), tono (--tono) y crítico (--critico)
 ├── DESPERTAR/
-│   ├── LENGUAJE            # Lanzador llama-server para chat (:8081, GPU, KV-cache q8_0)
-│   ├── MEMORIA             # Lanzador llama-server para embeddings (:8082, CPU)
+│   ├── EQUILIBRIO          # Equilibrador dinámico RAM/VRAM (-ngl e hilos) y adaptador de entrenamiento (--entrenar)
+│   ├── LENGUAJE            # Lanzador llama-server para chat (:8081, KV-cache q8_0, auto GPU/RAM)
+│   ├── MEMORIA             # Lanzador llama-server para embeddings (:8082, auto GPU/RAM)
+│   ├── AMIGDALA            # Lanzador llama-server guardrail Qwen3Guard-Gen-0.6B (:8083, auto GPU/RAM)
 │   ├── ABURRIMIENTO        # Gestor automático del ciclo de silencio, suspensión y entrada en sueño
-│   ├── DORMIR              # Consolidación en sueño (Ligero -> Profundo pausable -> REM)
-│   └── OLVIDO              # Demonio silencioso de decaimiento exponencial continuo (4 logs en REGISTROS/OLVIDO/)
+│   ├── DORMIR              # Consolidación en sueño (Ligero -> Profundo equilibrado -> REM)
+│   └── OLVIDO              # Demonio silencioso de decaimiento exponencial modulado por relevancia (4 logs)
 ├── HERRAMIENTAS/
-│   └── bash                # Enrutador vectorial de módulos (--spec) y ejecutor controlado
+│   └── bash                # Enrutador vectorial de módulos (--spec), aduana externa y ejecutor controlado
 ├── LORA/
 │   ├── ENTRENAR            # Lanzador local de entrenamiento de adaptadores LoRA GGUF
 │   ├── *.gguf              # Pesos GGUF compilados (criterio, curiosidad_1..3, sueno_*)
@@ -234,7 +253,7 @@ IAUTONOMA/
 │   └── DATASETS/           # Datasets JSONL e indice.json con centroides vectoriales reales
 ├── MODULOS/                # 26 scripts Bash (28 comandos) cargados dinámicamente
 ├── MEMORIA/                # (Generado en ejecución, excluido de Git) Capas JSON e índices
-└── REGISTROS/              # (Generado en ejecución, excluido de Git) Logs y estado de vigilia
+└── REGISTROS/              # (Generado en ejecución, excluido de Git) Logs, equilibrio.log y estado de vigilia
 ```
 
 ---
@@ -244,21 +263,22 @@ IAUTONOMA/
 ### Requisitos del sistema
 
 * **Intérprete:** Bash `>= 4.0` (Linux, Termux en Android o Windows mediante Git Bash / MSYS2).
-* **Utilidades estándar:** `jq`, `curl`, `awk`, `sed`, `grep`, `cksum`, `timeout`, `setsid`, `git`.
+* **Utilidades estándar:** `jq`, `curl`, `awk`, `sed`, `grep`, `cksum`, `timeout`, `setsid`, `nice`, `git`.
 * **Motor de inferencia local:** [`llama-server`](https://github.com/ggml-org/llama.cpp) accesible en el `PATH`.
 * **Modelos GGUF** ubicados por defecto en `../MODELO/` respecto a la raíz del repositorio (ruta modificable en `CONFIG`):
   * **Lenguaje (por defecto):** `Qwen3.5-2B-Q4_K_M.gguf` *(también compatible con `Qwen3.5-0.8B`, `Qwen3.5-4B`, `Qwen3-1.7B` y `Qwen3-0.6B`; los adaptadores LoRA activos residen directamente en `LORA/`)*.
   * **Embeddings:** `Qwen3-Embedding-0.6B-Q8_0.gguf`.
+  * **Amígdala / Guardrail (opcional, recomendado):** `Qwen3Guard-Gen-0.6B-Q4_K_M.gguf` *(si no existe en disco, el sistema opera con degradación limpia a `SAFE`)*.
 
 ### Instalación
 
 ```bash
 git clone https://github.com/wexex/IAUTONOMA.git
 cd IAUTONOMA
-chmod +x CHAT ENTRADA AGENTE DESPERTAR/* HERRAMIENTAS/* MODULOS/*
+chmod +x CHAT ENTRADA AGENTE AMIGDALA DESPERTAR/* HERRAMIENTAS/* MODULOS/*
 ```
 
-Asegúrate de disponer de los modelos GGUF en `../MODELO/` o actualiza las variables `MODELO` y `MODELO_MEMORIA` en `CONFIG`.
+Asegúrate de disponer de los modelos GGUF en `../MODELO/` o actualiza las variables `MODELO`, `MODELO_MEMORIA` y `MODELO_AMIGDALA` en `CONFIG`.
 
 ---
 
@@ -294,7 +314,9 @@ Todos los parámetros operativos se centralizan en `CONFIG`:
 | :--- | :--- | :--- |
 | `MODELO` | `../MODELO/Qwen3.5-2B-Q4_K_M.gguf` | Ruta al modelo GGUF de generación conversacional (intercambiable con `0.8B`, `4B`, etc.). |
 | `MODELO_MEMORIA` | `../MODELO/Qwen3-Embedding-0.6B-Q8_0.gguf` | Ruta al modelo GGUF de embeddings (`1024` dimensiones). |
-| `PUERTO` / `PUERTO_MEMORIA` | `8081` / `8082` | Puertos locales para los servicios `LENGUAJE` y `MEMORIA`. |
+| `MODELO_AMIGDALA` | `../MODELO/Qwen3Guard-Gen-0.6B-Q4_K_M.gguf` | Ruta al modelo GGUF guardrail para la aduana neuronal de seguridad y contenido externo. |
+| `PUERTO` / `PUERTO_MEMORIA` / `PUERTO_AMIGDALA` | `8081` / `8082` / `8083` | Puertos locales para los servicios `LENGUAJE`, `MEMORIA` y `AMIGDALA`. |
+| `TIMEOUT_AMIGDALA` | `8` | Tiempo máximo (segundos) de espera por evaluación en `AMIGDALA`. |
 | `TEMPERATURA` / `PENALIZACION_REPETICION` | `0.001` / `1.05` | Temperatura de muestreo y penalización de repetición enviadas a `llama-server`. |
 | `PESO_INICIAL` | `0.85` | Norma L2 asignada a cada recuerdo recién consolidado. |
 | `UMBRAL_SIM` | `0.52` | Umbral base de recuperación en Hipocampo (`uh`), límite inferior de LTD y corte de poda en `OLVIDO` (de él se derivan `ue = 0.59` en Episódica y `up = 0.66` en Persistente). |

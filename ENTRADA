@@ -502,6 +502,90 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
         fi
     fi
 
+    # Amigdala Fase 2 (en segundo plano, 0 ms en chat): detectar tono, sarcasmo y valencia emocional del usuario
+    VAL_EMO="0"
+    MATIZ_EMO="neutro"
+    if [[ -x "$DIR/AMIGDALA" ]]; then
+        if [[ ${#ENTRADA_UNA_LINEA} -ge 5 ]]; then
+            PREV_ASIST=""
+            if [[ -s "$HIPOCAMPO" ]]; then
+                PREV_ASIST=$(jq -r -s '
+                    [ .[ ] | select(type == "object" and (((.messages[0].content // "") | startswith("<<")) | not)) ][-1].messages[1].content // ""
+                ' "$HIPOCAMPO" 2>/dev/null)
+            fi
+            IFS=$'\t' read -r VAL_EMO MATIZ_EMO < <("$DIR/AMIGDALA" --tono "$ENTRADA_UNA_LINEA" "$PREV_ASIST" 2>/dev/null)
+            if [[ -z "$VAL_EMO" ]]; then VAL_EMO="0"; fi
+            if [[ -z "$MATIZ_EMO" ]]; then MATIZ_EMO="neutro"; fi
+
+            if [[ "$VAL_EMO" -lt 0 ]]; then
+                VAL_TURNO="-1"
+                # Feedback retroactivo: si el turno previo en Hipocampo es reciente (<600s), marcarlo negativo y rebajar su peso
+                if [[ -s "$HIPOCAMPO" ]]; then
+                    HIPO_CAST=$(jq -a -c -s --argjson ahora "$TS_TURNO" '
+                        def norm($v): ((reduce $v[:1024][ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                        if length > 0 then
+                            (length - 1) as $ult |
+                            to_entries |
+                            map(
+                                if (.key == $ult and (.value.ts != null) and (($ahora - .value.ts) <= 600) and ((.value.valencia // 0) >= 0)) then
+                                    .value + {
+                                        valencia: -1,
+                                        embedding: (if .value.embedding != null then (.value.embedding[:1024] | map(((. * 0.65) * 10000 | round) / 10000)) else null end)
+                                    }
+                                else
+                                    .value
+                                end
+                            )[ ]
+                        else
+                            empty
+                        end
+                    ' "$HIPOCAMPO" 2>/dev/null)
+                    if [[ -n "$HIPO_CAST" ]]; then
+                        printf '%s\n' "$HIPO_CAST" > "${HIPOCAMPO}.$$.tmp"
+                        mv -f "${HIPOCAMPO}.$$.tmp" "$HIPOCAMPO" 2>/dev/null
+                    fi
+                fi
+            elif [[ "$VAL_EMO" -gt 0 ]]; then
+                if [[ "${VAL_TURNO:-0}" -eq 0 ]]; then
+                    VAL_TURNO="1"
+                fi
+            fi
+
+            # Registrar estado emocional en MEMORIA/amigdala.json
+            AMIG_C="{}"
+            if [[ -s "$AMIGDALA" ]]; then
+                AMIG_C=$(cat "$AMIGDALA" 2>/dev/null)
+                if [[ -z "$AMIG_C" ]]; then AMIG_C="{}"; fi
+            fi
+            AMIG_C_NUEVA=$(jq -a -c \
+                --arg mat "$MATIZ_EMO" \
+                --argjson vemo "$VAL_EMO" \
+                --argjson maxf "${MAX_FRUSTRACION:-3}" '
+                (
+                    if $vemo < 0 then
+                        (((.frustracion // 0) + 1) | if . > $maxf then $maxf else . end)
+                    elif $vemo > 0 then
+                        0
+                    else
+                        (.frustracion // 0)
+                    end
+                ) as $fr |
+                (if $vemo != 0 then $vemo else (.ultima_valencia // 0) end) as $uval |
+                . + {
+                    tono_usuario: $mat,
+                    valencia_emocional: $vemo,
+                    frustracion: $fr,
+                    ultima_valencia: $uval
+                }
+            ' < <(printf '%s' "$AMIG_C") 2>/dev/null)
+            if [[ -n "$AMIG_C_NUEVA" ]]; then
+                mkdir -p "$DIR_MEMORIA"
+                printf '%s\n' "$AMIG_C_NUEVA" > "${AMIGDALA}.$$.tmp"
+                mv -f "${AMIGDALA}.$$.tmp" "$AMIGDALA" 2>/dev/null
+            fi
+        fi
+    fi
+
     TEXTO_RESP_VEC="${RESPUESTA_UNA_LINEA:0:120}"
     TEXTO_VEC="$ENTRADA_UNA_LINEA $TEXTO_RESP_VEC"
 

@@ -144,7 +144,9 @@ while true; do
                 def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt);
                 (input_filename) as $fn |
                 (if ($fn | endswith($h)) then "H" elif ($fn | contains($pp)) then "P" else "E" end) as $capa |
-                (if $capa == "H" then $dh elif $capa == "P" then $dp else $dm end) as $d |
+                (if $capa == "H" then $dh elif $capa == "P" then $dp else $dm end) as $d_base |
+                (.valencia // 0) as $val |
+                (if $val > 0 then (if $d_base > 0 then ((($d_base | log) * 0.6) | exp) else $d_base end) elif $val < 0 then ($d_base * $d_base) else $d_base end) as $d |
                 .embedding = (if .embedding then (.embedding[:1024] | map(. * $d)) else null end) |
                 (if .embedding != null then norm(.embedding) else 0 end) as $nv |
                 ((.messages[0].content // "") | gsub("[\r\n\t]+"; " ")) as $u |

@@ -14,6 +14,70 @@ if command -v nproc >/dev/null 2>/dev/null; then
     fi
 fi
 
+# Modo entrenamiento (CPU + RAM): adapta hilos y prioridad antes de cada ciclo particionado
+if [[ "$ARCH_MOD" == "--entrenar" ]]; then
+    RAM_TOT=0
+    RAM_LIB=0
+    if [[ -r /proc/meminfo ]]; then
+        RT_DET=$(awk '/MemTotal:/ {printf "%d", $2/1024; exit}' /proc/meminfo 2>/dev/null)
+        RL_DET=$(awk '/MemAvailable:/ {printf "%d", $2/1024; exit}' /proc/meminfo 2>/dev/null)
+        if [[ -z "$RL_DET" ]]; then
+            RL_DET=$(awk '/MemFree:/ {printf "%d", $2/1024; exit}' /proc/meminfo 2>/dev/null)
+        fi
+        if [[ "$RT_DET" =~ ^[0-9]+$ ]]; then RAM_TOT="$RT_DET"; fi
+        if [[ "$RL_DET" =~ ^[0-9]+$ ]]; then RAM_LIB="$RL_DET"; fi
+    fi
+    LOAD_1="0"
+    if [[ -r /proc/loadavg ]]; then
+        L_DET=$(awk '{print $1; exit}' /proc/loadavg 2>/dev/null)
+        if [[ "$L_DET" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then LOAD_1="$L_DET"; fi
+    fi
+
+    IFS=$'\t' read -r HILOS_ENT PAUSAR_ENT MODO_ENT < <(jq -r -n \
+        --argjson cores "$CORES" \
+        --argjson rtot "$RAM_TOT" \
+        --argjson rlib "$RAM_LIB" \
+        --argjson load "$LOAD_1" '
+        (if $rtot > 0 then ($rlib / $rtot) else 0.5 end) as $rpct |
+        (if $cores > 0 then ($load / $cores) else 0.0 end) as $crel |
+        (if ($rtot > 0 and $rpct < 0.22) then 1 else 0 end) as $pausar |
+        (
+            if $crel >= 0.75 then
+                ([1, (($cores / 2) | floor)] | max)
+            elif ($crel >= 0.40 or $rpct < 0.40) then
+                ([1, ($cores - 1)] | max)
+            else
+                $cores
+            end
+        ) as $hilos |
+        (
+            if $pausar == 1 then "ESPERA_RAM"
+            elif $hilos >= $cores then "TOTAL"
+            elif $hilos > ($cores / 2) then "EQUILIBRADO"
+            else "SUAVE" end
+        ) as $modo |
+        "\($hilos)\t\($pausar)\t\($modo)"
+    ' 2>/dev/null)
+
+    if [[ -z "$HILOS_ENT" ]]; then HILOS_ENT="$CORES"; fi
+    if [[ -z "$PAUSAR_ENT" ]]; then PAUSAR_ENT="0"; fi
+    if [[ -z "$MODO_ENT" ]]; then MODO_ENT="TOTAL"; fi
+
+    mkdir -p "$DIR_REGISTROS"
+    LOG_EQ="$DIR_REGISTROS/equilibrio.log"
+    if [[ -f "$LOG_EQ" ]]; then
+        if [[ $(wc -l < "$LOG_EQ") -ge 200 ]]; then
+            tail -n 100 "$LOG_EQ" > "${LOG_EQ}.tmp"
+            mv -f "${LOG_EQ}.tmp" "$LOG_EQ" 2>/dev/null
+        fi
+    fi
+    printf '[%s] ENTRENAMIENTO | modo=%s | hilos=%s/%s | load=%s | ram_libre=%s/%sMiB | pausar=%s\n' \
+        "$(date "+%Y-%m-%d %H:%M:%S")" "$MODO_ENT" "$HILOS_ENT" "$CORES" "$LOAD_1" "$RAM_LIB" "$RAM_TOT" "$PAUSAR_ENT" >> "$LOG_EQ"
+
+    printf '%s\t%s\t%s\t%s\t%s\n' "$HILOS_ENT" "$PAUSAR_ENT" "$MODO_ENT" "$RAM_LIB" "$LOAD_1"
+    exit 0
+fi
+
 if [[ ! -s "$ARCH_MOD" ]]; then
     printf '0\t%s\tRAM\t0\t0\t0\n' "$CORES"
     exit 0
