@@ -280,7 +280,7 @@ guardar_en_capa() {
                         ($coincidentes | sort_by(-._sim) | .[0]) as $gan |
                         ($gan._ne) as $n_base |
                         (
-                            if (($nuevo.herramienta // 0) == 1 or ($gan.herramienta // 0) == 1 or ((($nuevo.messages[1].content // "") | startswith("["))) or ((($gan.messages[1].content // "") | startswith("[")))) then
+                            if (($nuevo.herramienta // 0) == 1 or ((($nuevo.messages[1].content // "") | startswith("[")))) then
                                 1
                             else
                                 0
@@ -661,7 +661,7 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                 ($coincidentes | sort_by(-._sim) | .[0]) as $gan |
                 ($gan._ne) as $n_base |
                 (
-                    if (($nuevo.herramienta // 0) == 1 or ($gan.herramienta // 0) == 1 or ((($nuevo.messages[1].content // "") | startswith("["))) or ((($gan.messages[1].content // "") | startswith("[")))) then
+                    if (($nuevo.herramienta // 0) == 1 or ((($nuevo.messages[1].content // "") | startswith("[")))) then
                         1
                     else
                         0
