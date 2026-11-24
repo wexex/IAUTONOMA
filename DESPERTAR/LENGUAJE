@@ -51,7 +51,6 @@ llama-server \
 -fa on \
 -ctk q8_0 \
 -ctv q8_0 \
--cram 0 \
 -lm none \
 --no-host \
 --log-colors on 2> >(tee >(sed -u 's/\x1b\[[0-9;]*m//g' >> "$LOG_SERVER")) > >(tee >(sed -u 's/\x1b\[[0-9;]*m//g' >> "$LOG_SERVER"))
