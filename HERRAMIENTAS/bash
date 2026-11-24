@@ -161,14 +161,28 @@ if [[ "$1" == "--spec" ]]; then
                             fi
                         done < <(printf '%s\n' "$PARTS_GANADORAS")
                         if [[ ${#ARCHS_GANADORES[@]} -gt 0 ]]; then
-                            MODS_FILTRADOS=$(jq -r -s --argjson max "$MAX_MODULOS" '
+                            MODS_FILTRADOS=$(jq -r -s --argjson max "$MAX_MODULOS" --arg qtxt "$ENTRADA_SPEC" '
                                 def dot($a; $b): reduce range(0; 1024) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                                def toks($s): [ ($s // "" | ascii_downcase | gsub("_"; " ") | scan("[a-z0-9-]{3,}")) ] | unique;
+                                def lex($qt; $txt):
+                                    if ($qt | length) == 0 then 0.0
+                                    else
+                                        (toks($txt)) as $dt |
+                                        (reduce $qt[ ] as $t (0; . + ($t | length))) as $tot |
+                                        (reduce $qt[ ] as $t (0; . + (if ($dt | index($t)) != null then ($t | length) else 0 end))) as $hit |
+                                        if $tot > 0 then ($hit / $tot) else 0.0 end
+                                    end;
                                 (.[0]) as $q |
+                                (toks($qtxt)) as $qtoks |
                                 [
                                     .[1:][ ] |
                                     select(type == "object" and .embedding != null) |
-                                    . + {sim: dot(.embedding; $q)}
-                                ] | sort_by(-.sim)[:$max] | sort_by(.modulo)[ ].modulo
+                                    . + {sim: dot(.embedding; $q), lx: lex($qtoks; .modulo)}
+                                ] |
+                                sort_by(-.sim) | to_entries | map(.value + {_rsem: .key}) |
+                                sort_by(-.lx, -.sim) | to_entries | map(.value + {_rlex: .key}) |
+                                map(. + {_rrf: ((1 / (20 + ._rsem)) + (if .lx > 0 then (1 / (20 + ._rlex)) else 0 end))}) |
+                                sort_by(-._rrf)[:$max][ ].modulo
                             ' < <(printf '%s\n' "$VEC_CONSULTA"; cat "${ARCHS_GANADORES[@]}") 2>/dev/null)
                             if [[ -n "$MODS_FILTRADOS" ]]; then
                                 MODULOS_ELEGIDOS="$MODS_FILTRADOS"

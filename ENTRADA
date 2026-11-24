@@ -4,6 +4,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)/CONFIG"
 
 # FECHA Y HORA
 FECHA_HORA=$(date "+%Y-%m-%d %H:%M:%S")
+TS_TURNO=$(date +%s)
+HUBO_DESPERTAR=0
 
 # Argumentos recibidos:
 MODO_CONSOLIDAR=0
@@ -44,7 +46,11 @@ if [[ $MODO_CONSOLIDAR -eq 1 ]]; then
         IFS= read -r FECHA_HORA
         IFS= read -r ENTRADA_UNA_LINEA
         IFS= read -r RESPUESTA_UNA_LINEA
+        IFS= read -r TS_TURNO
+        IFS= read -r HUBO_DESPERTAR
     } < "$ARCH_TURNO_CONSOLIDAR"
+    if [[ -z "$TS_TURNO" ]]; then TS_TURNO=$(date +%s); fi
+    if [[ -z "$HUBO_DESPERTAR" ]]; then HUBO_DESPERTAR=0; fi
 else
     # Cargar entrada
     ENTRADA="$*"
@@ -170,7 +176,7 @@ else
     if [[ $MODO_INTERNO -eq 0 ]]; then
         if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
             ARCH_TURNO_TMP="$DIR_REGISTROS/.turno.$$.tmp"
-            printf '%s\n%s\n%s\n' "$FECHA_HORA" "$ENTRADA_UNA_LINEA" "$RESPUESTA_UNA_LINEA" > "$ARCH_TURNO_TMP"
+            printf '%s\n%s\n%s\n%s\n%s\n' "$FECHA_HORA" "$ENTRADA_UNA_LINEA" "$RESPUESTA_UNA_LINEA" "$TS_TURNO" "${ACABA_DE_DESPERTAR:-0}" > "$ARCH_TURNO_TMP"
             true < <(setsid "$DIR/ENTRADA" --consolidar "$ARCH_TURNO_TMP" "$ARCH_TRAZA_TOOL" </dev/null >/dev/null 2>/dev/null)
         else
             rm -f "$ARCH_TRAZA_TOOL" 2>/dev/null
@@ -288,7 +294,7 @@ guardar_en_capa() {
                         ($u_nuevo | map((. * $n_ref * 10000 | round) / 10000)) as $emb_final |
                         (
                             [ $marcados[ ] | select(._sim < $uref or ._loro == 1) | del(._sim, ._su, ._sa, ._sua, ._loro, ._ne) ] +
-                            [($nuevo + {herramienta: $es_herr, embedding: $emb_final})]
+                            [($nuevo + {herramienta: $es_herr, embedding: $emb_final, sensor: (if ($nuevo.sensor != null and ($nuevo.sensor | length) > 0) then $nuevo.sensor else ($gan.sensor // null) end)})]
                         )[ ]
                     else
                         ([
@@ -400,11 +406,62 @@ guardar_en_capa() {
     ULTIMA_PARTICION="$PARTICION_GANADORA"
 }
 
+# Memoria Reloj (ciclo biologico separado del hipocampo: despertar, silencio, dormir y sueno)
+registrar_en_reloj() {
+    EV_R="$1"
+    F_R="$2"
+    TS_R="$3"
+    U_R="$4"
+    A_R="$5"
+    TXT_EMB_R="$6"
+
+    if [[ ! -f "$RELOJ" ]]; then > "$RELOJ"; fi
+    PAY_R=$(jq -a -n --arg t "$TXT_EMB_R" '{input: $t}')
+    RESP_R=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_R" 2>/dev/null)
+    if [[ -z "$RESP_R" ]]; then RESP_R="{}"; fi
+
+    LIN_R=$(jq -a -c --arg ev "$EV_R" --arg f "$F_R" --argjson ts "$TS_R" --arg u "$U_R" --arg a "$A_R" '{
+        fecha: $f,
+        ts: $ts,
+        evento: $ev,
+        messages: [
+            {"role": "user", "content": $u},
+            {"role": "assistant", "content": $a}
+        ],
+        embedding: (if (.data and (.data | length) > 0) then (.data[0].embedding | map((. * 10000 | round) / 10000)) else null end)
+    }' < <(printf '%s' "$RESP_R") 2>/dev/null)
+
+    if [[ -n "$LIN_R" ]]; then
+        RELOJ_ACT=$(jq -a -c -s --argjson maxp "$MAX_PARTICION" '.[-$maxp:][ ]' < <(cat "$RELOJ"; printf '%s\n' "$LIN_R") 2>/dev/null)
+        if [[ -n "$RELOJ_ACT" ]]; then
+            printf '%s\n' "$RELOJ_ACT" > "${RELOJ}.$$.tmp"
+            mv -f "${RELOJ}.$$.tmp" "$RELOJ" 2>/dev/null
+        fi
+    fi
+}
+
 # Hipocampo (momento presente) y Memoria a largo plazo (consolidacion y refuerzo)
 if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
+    if [[ $MODO_INTERNO -eq 1 ]]; then
+        EV_INT="interno"
+        if [[ "$ENTRADA_UNA_LINEA" == "$ESTIMULO_SILENCIO" ]]; then EV_INT="silencio"; fi
+        if [[ "$ENTRADA_UNA_LINEA" == "$ESTIMULO_DORMIR" ]]; then EV_INT="dormir"; fi
+        TXT_INT_R="reloj ciclo $EV_INT cuando dormiste silencio vigilia $ENTRADA_UNA_LINEA $RESPUESTA_UNA_LINEA"
+        registrar_en_reloj "$EV_INT" "$FECHA_HORA" "$TS_TURNO" "$ENTRADA_UNA_LINEA" "$RESPUESTA_UNA_LINEA" "$TXT_INT_R"
+        exit 0
+    fi
+
     if [[ ! -f "$INDICE_EPISODICA" ]]; then > "$INDICE_EPISODICA"; fi
     if [[ ! -f "$INDICE_PERSISTENTE" ]]; then > "$INDICE_PERSISTENTE"; fi
     if [[ ! -f "$HIPOCAMPO" ]]; then > "$HIPOCAMPO"; fi
+
+    if [[ "${HUBO_DESPERTAR:-0}" -eq 1 ]]; then
+        registrar_en_reloj "despertar" "$FECHA_HORA" "$TS_TURNO" "$ESTIMULO_DESPERTAR" "Me desperte el $FECHA_HORA." "reloj ciclo despertar cuando te despertaste ultimo despertar vigilia $FECHA_HORA"
+        ENTRADA_LIMPIA=$(jq -r -n --arg t "$ENTRADA_UNA_LINEA" '$t | sub("^\\[[^\\]]+\\] <<[^>]+>> *"; "")')
+        if [[ -n "$ENTRADA_LIMPIA" ]]; then
+            ENTRADA_UNA_LINEA="$ENTRADA_LIMPIA"
+        fi
+    fi
 
     TEXTO_RESP_VEC="${RESPUESTA_UNA_LINEA:0:120}"
     TEXTO_VEC="$ENTRADA_UNA_LINEA $TEXTO_RESP_VEC"
@@ -413,8 +470,9 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
     RESP_MEM=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAYLOAD_MEM")
     if [[ -z "$RESP_MEM" ]]; then RESP_MEM="{}"; fi
 
-    LINEA_TURNO=$(jq -a -c --arg f "$FECHA_HORA" --arg u "$ENTRADA_UNA_LINEA" --arg a "$RESPUESTA_UNA_LINEA" --argjson peso "$PESO_INICIAL" '{
+    LINEA_TURNO=$(jq -a -c --arg f "$FECHA_HORA" --argjson ts "$TS_TURNO" --arg u "$ENTRADA_UNA_LINEA" --arg a "$RESPUESTA_UNA_LINEA" --argjson peso "$PESO_INICIAL" '{
         fecha: $f,
+        ts: $ts,
         herramienta: (if ($a | startswith("[")) then 1 else 0 end),
         messages: [
             {"role": "user", "content": $u},
@@ -424,6 +482,24 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
         emb_u: (if (.data and (.data | length) > 1) then (.data[1].embedding | map((. * 10000 | round) / 10000)) else null end),
         emb_a: (if (.data and (.data | length) > 2) then (.data[2].embedding | map((. * 10000 | round) / 10000)) else null end)
     }' < <(echo "$RESP_MEM"))
+
+    # Hipocampo sensorial: adjuntar salida real compactada de herramienta SOLO al registro del hipocampo (nunca sube a persistente)
+    LINEA_HIPO="$LINEA_TURNO"
+    if [[ -n "$ARCH_TRAZA_CONSOLIDAR" ]]; then
+        if [[ -s "$ARCH_TRAZA_CONSOLIDAR" ]]; then
+            SENSOR_TXT=$(jq -r '
+                [
+                    .[ ] |
+                    select(.role == "tool" and ((.content // "") | length) > 0) |
+                    ((.content // "") | gsub("[\r\n]+"; " | ") | .[0:700])
+                ] | join(" ; ") | .[0:800]
+            ' "$ARCH_TRAZA_CONSOLIDAR" 2>/dev/null)
+            if [[ -n "$SENSOR_TXT" ]]; then
+                LINEA_HIPO=$(jq -a -c --arg sens "$SENSOR_TXT" '. + {sensor: $sens}' < <(printf '%s' "$LINEA_TURNO") 2>/dev/null)
+                if [[ -z "$LINEA_HIPO" ]]; then LINEA_HIPO="$LINEA_TURNO"; fi
+            fi
+        fi
+    fi
 
     H_HIP=$(( ${DECAIMIENTO_HIPOCAMPO} ))
     H_MEM=$(( ${DECAIMIENTO_MEMORIA} ))
@@ -508,7 +584,7 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                 ($u_nuevo | map((. * $n_ref * 10000 | round) / 10000)) as $emb_final |
                 (
                     [ $marcados[ ] | select(._sim < $uref or ._loro == 1) | del(._sim, ._su, ._sa, ._sua, ._loro, ._ne) ] +
-                    [($nuevo + {herramienta: $es_herr, embedding: $emb_final})]
+                    [($nuevo + {herramienta: $es_herr, embedding: $emb_final, sensor: (if ($nuevo.sensor != null and ($nuevo.sensor | length) > 0) then $nuevo.sensor else ($gan.sensor // null) end)})]
                 )[-$maxp:][ ]
             else
                 ([
@@ -548,19 +624,76 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                 )[-$maxp:][ ]
             end
         end
-    ' < <(cat "$HIPOCAMPO"; echo "$LINEA_TURNO"))
+    ' < <(cat "$HIPOCAMPO"; echo "$LINEA_HIPO"))
     if [[ -n "$HIPO_NUEVO" ]]; then
         echo "$HIPO_NUEVO" > "${HIPOCAMPO}.$$.tmp"
         mv -f "${HIPOCAMPO}.$$.tmp" "$HIPOCAMPO"
     fi
 
-    # 2. Guardar en Memoria Episodica particionada
-    guardar_en_capa "$INDICE_EPISODICA" "$PREFIJO_EPISODICA" "$LINEA_TURNO" "$NORM_OBJ_MEM"
+    # 2. Destilar Hecho Atomico (estilo Mem0) en background antes de guardar en Episodica (sin saludos ni relleno)
+    LINEA_EPI="$LINEA_TURNO"
+    OMITIR_EPI=0
+    ES_HERR_EPI=$(jq -r '.herramienta // 0' < <(printf '%s' "$LINEA_TURNO") 2>/dev/null)
+    if [[ "${ES_HERR_EPI:-0}" -eq 0 ]]; then
+        if [[ ${#ENTRADA_UNA_LINEA} -ge 15 ]]; then
+            PAY_ATOM=$(jq -a -n --arg u "$ENTRADA_UNA_LINEA" --arg a "$RESPUESTA_UNA_LINEA" '{
+                messages: [
+                    {"role": "system", "content": "Extrae SOLO los hechos concretos y objetivos dichos en este turno (datos del usuario, nombres, gustos, codigos, decisiones) en UNA sola frase corta en tercera persona, sin saludos ni emojis. Si solo es un saludo o charla vacia sin hechos concretos, responde exactamente: NINGUNO"},
+                    {"role": "user", "content": ("Usuario: " + $u + "\nAsistente: " + ($a | .[0:300]))}
+                ],
+                temperature: 0.0,
+                max_tokens: 64
+            }')
+            RESP_ATOM=$(curl -sf -m 15 "$URL" -H "Content-Type: application/json" -d "$PAY_ATOM" 2>/dev/null)
+            HECHO_ATOM=$(jq -r '.choices[0].message.content // empty' < <(printf '%s' "$RESP_ATOM") 2>/dev/null)
+            HECHO_ATOM="${HECHO_ATOM//$'\r'/ }"
+            HECHO_ATOM="${HECHO_ATOM//$'\n'/ }"
+            HECHO_ATOM=$(jq -r -n --arg s "$HECHO_ATOM" '$s | gsub("^\\s+|\\s+$"; "")')
+            if [[ "${HECHO_ATOM^^}" == "NINGUNO"* ]]; then
+                OMITIR_EPI=1
+            elif [[ ${#HECHO_ATOM} -ge 10 ]]; then
+                PAY_EMB_AT=$(jq -a -n --arg t "$HECHO_ATOM" '{input: $t}')
+                RESP_EMB_AT=$(curl -sf -m 10 "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_EMB_AT" 2>/dev/null)
+                if [[ -z "$RESP_EMB_AT" ]]; then RESP_EMB_AT="{}"; fi
+                LINEA_ATOM=$(jq -a -c -s --arg h "$HECHO_ATOM" --argjson peso "$PESO_INICIAL" '
+                    (.[0]) as $base |
+                    (.[1]) as $emb |
+                    if ($emb.data and ($emb.data | length) > 0) then
+                        ($emb.data[0].embedding) as $v |
+                        $base + {
+                            atomico: 1,
+                            messages: [
+                                {"role": "user", "content": $h},
+                                {"role": "assistant", "content": $h}
+                            ],
+                            embedding: ($v | map(((. * $peso) * 10000 | round) / 10000)),
+                            emb_u: ($v | map((. * 10000 | round) / 10000)),
+                            emb_a: ($v | map((. * 10000 | round) / 10000))
+                        }
+                    else
+                        empty
+                    end
+                ' < <(printf '%s\n%s\n' "$LINEA_TURNO" "$RESP_EMB_AT") 2>/dev/null)
+                if [[ -n "$LINEA_ATOM" ]]; then
+                    LINEA_EPI="$LINEA_ATOM"
+                fi
+            fi
+        fi
+    fi
+
+    # 2b. Guardar en Memoria Episodica particionada (si no fue saludo vacio)
+    ULTIMA_PARTICION=""
+    if [[ $OMITIR_EPI -eq 0 ]]; then
+        guardar_en_capa "$INDICE_EPISODICA" "$PREFIJO_EPISODICA" "$LINEA_EPI" "$NORM_OBJ_MEM"
+    fi
 
     # 3. Ascenso a Memoria Persistente particionada solo si el turno recien guardado (ultima linea) alcanzo norma >= $UMBRAL_PERSISTENTE, o LTD si colisiona con un recuerdo persistente
-    CANDIDATO_PER=$(jq -a -c --argjson uper "$UMBRAL_PERSISTENTE" '
-        select((.herramienta // 0) == 0 and (((.messages[1].content // "") | startswith("[")) | not) and (((.messages[0].content // "") | startswith("<<")) | not) and .embedding != null and ((.embedding | map(. * .) | add | sqrt) >= $uper))
-    ' < <(tail -n 1 "$DIR_MEMORIA/$ULTIMA_PARTICION"))
+    CANDIDATO_PER=""
+    if [[ -n "$ULTIMA_PARTICION" ]]; then
+        CANDIDATO_PER=$(jq -a -c --argjson uper "$UMBRAL_PERSISTENTE" '
+            select((.herramienta // 0) == 0 and (((.messages[1].content // "") | startswith("[")) | not) and (((.messages[0].content // "") | startswith("<<")) | not) and .embedding != null and ((.embedding | map(. * .) | add | sqrt) >= $uper))
+        ' < <(tail -n 1 "$DIR_MEMORIA/$ULTIMA_PARTICION"))
+    fi
     if [[ -n "$CANDIDATO_PER" ]]; then
         guardar_en_capa "$INDICE_PERSISTENTE" "$PREFIJO_PERSISTENTE" "$CANDIDATO_PER" "$NORM_OBJ_PER"
     elif [[ -s "$INDICE_PERSISTENTE" ]]; then
@@ -665,10 +798,11 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
     fi
 
     # 4. Capa procedimental (trazas reales completas de herramientas: usar + leer, solo para entrenamiento en sueno)
+    LINEA_PROC=""
     if [[ -n "$ARCH_TRAZA_CONSOLIDAR" ]]; then
         if [[ -s "$ARCH_TRAZA_CONSOLIDAR" ]]; then
             if [[ ! -f "$INDICE_PROCEDIMENTAL" ]]; then > "$INDICE_PROCEDIMENTAL"; fi
-            LINEA_PROC=$(jq -a -c -s --arg f "$FECHA_HORA" '
+            LINEA_PROC=$(jq -a -c -s --arg f "$FECHA_HORA" --argjson peso "$PESO_INICIAL" '
                 def norm($v): ((reduce $v[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
                 (.[0]) as $resp |
                 (.[1]) as $msgs |
@@ -681,7 +815,7 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                             if ($resp.data and ($resp.data | length) > 0) then
                                 ($resp.data[0].embedding) as $v |
                                 (norm($v)) as $n |
-                                ($v | map(((. / $n) * 10000 | round) / 10000))
+                                ($v | map(((. / $n) * $peso * 10000 | round) / 10000))
                             else
                                 null
                             end
@@ -716,25 +850,43 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
 
                 if [[ -n "$PART_PROC" ]]; then
                     if [[ -s "$DIR_MEMORIA/$PART_PROC" ]]; then
-                        PROC_ACT=$(jq -a -c -s --argjson uref "$UMBRAL_REFUERZO" '
+                        PROC_ACT=$(jq -a -c -s --argjson uref "$UMBRAL_REFUERZO" --argjson fref "$FACTOR_REFUERZO" '
                             def norm($v): ((reduce $v[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
                             def dot($a; $b): reduce range(0; ($a | length)) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                            def mod_cmd($m):
+                                (([ $m[ ] | select(.tool_calls != null and (.tool_calls | length) > 0) ][0].tool_calls[0].function.arguments // "{}") as $raw |
+                                (if ($raw | type) == "string" then (try ($raw | fromjson) catch {comando: $raw}) else $raw end) |
+                                (.comando // "") | split(" ")[0] // "");
                             (.[0:-1]) as $items |
                             (.[-1]) as $nuevo |
                             if $nuevo.emb_u == null then
                                 ($items + [$nuevo])[ ]
                             else
                                 (norm($nuevo.emb_u)) as $nu |
+                                (mod_cmd($nuevo.messages)) as $mod_n |
                                 (
                                     [
                                         $items[ ] |
-                                        select(
-                                            type != "object" or
-                                            .emb_u == null or
-                                            ((.emb_u | length) != ($nuevo.emb_u | length)) or
-                                            ((dot(.emb_u; $nuevo.emb_u) / (norm(.emb_u) * $nu)) < $uref)
-                                        )
-                                    ] + [$nuevo]
+                                        if (type == "object" and .emb_u != null and ((.emb_u | length) == ($nuevo.emb_u | length))) then
+                                            . + {_su: (dot(.emb_u; $nuevo.emb_u) / (norm(.emb_u) * $nu))}
+                                        else
+                                            . + {_su: 0}
+                                        end
+                                    ]
+                                ) as $marc |
+                                ([ $marc[ ] | select(._su >= $uref) ] | sort_by(-._su) | .[0] // null) as $prev |
+                                (
+                                    if ($prev != null and $prev.embedding != null and $nuevo.embedding != null and (mod_cmd($prev.messages) == $mod_n)) then
+                                        (norm($prev.embedding)) as $np |
+                                        (norm($nuevo.embedding)) as $nn |
+                                        ((if ($np * $fref) > $nn then ($np * $fref) else $nn end) | if . > 1.0 then 1.0 else . end) as $nfin |
+                                        ($nuevo + {embedding: ($nuevo.embedding | map(((. / $nn) * $nfin * 10000 | round) / 10000))})
+                                    else
+                                        $nuevo
+                                    end
+                                ) as $nuevo_fin |
+                                (
+                                    [ $marc[ ] | select(._su < $uref) | del(._su) ] + [$nuevo_fin]
                                 )[ ]
                             end
                         ' < <(cat "$DIR_MEMORIA/$PART_PROC"; printf '%s\n' "$LINEA_PROC") 2>/dev/null)
@@ -759,7 +911,14 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                     def norm($v): ((reduce $v[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
                     (.[0:-1]) as $idx |
                     (.[-1]) as $nuevo |
-                    ($nuevo.embedding) as $v_unit |
+                    (
+                        if $nuevo.embedding != null then
+                            (norm($nuevo.embedding)) as $nq |
+                            ($nuevo.embedding | map(((. / $nq) * 10000 | round) / 10000))
+                        else
+                            null
+                        end
+                    ) as $v_unit |
                     if ([ $idx[ ] | select(.archivo == $arch) ] | length) > 0 then
                         [
                             $idx[ ] |
@@ -800,6 +959,295 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                     printf '%s\n' "$IND_PROC_NUEVO" > "${INDICE_PROCEDIMENTAL}.$$.tmp"
                     mv -f "${INDICE_PROCEDIMENTAL}.$$.tmp" "$INDICE_PROCEDIMENTAL"
                 fi
+            fi
+        fi
+    elif [[ $MODO_INTERNO -eq 0 ]]; then
+        # Turno sin herramienta: purgar de procedimental si habia una traza previa para la misma consulta o si el hipocampo castigo (LTD) una herramienta
+        if [[ -s "$INDICE_PROCEDIMENTAL" ]]; then
+            U_CASTIGADOS=$(jq -a -c -s --argjson nh "$NORM_OBJ_HIP" '
+                def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                [ .[ ] | select(type == "object" and (.herramienta // 0) == 1 and .embedding != null and norm(.embedding) <= ($nh + 0.003)) | (.messages[0].content // "") ] | unique
+            ' "$HIPOCAMPO" 2>/dev/null)
+            if [[ -z "$U_CASTIGADOS" ]]; then U_CASTIGADOS="[ ]"; fi
+            for pf_p in "$DIR_MEMORIA/${PREFIJO_PROCEDIMENTAL}_"*.json; do
+                if [[ -s "$pf_p" ]]; then
+                    BASE_PP="$(basename "$pf_p")"
+                    ANT_LP=$(( $(wc -l < "$pf_p") ))
+                    FILT_PP=$(jq -a -c -s --argjson uref "$UMBRAL_REFUERZO" --argjson cast "$U_CASTIGADOS" '
+                        def norm($v): ((reduce $v[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                        def dot($a; $b): reduce range(0; ($a | length)) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                        (.[0:-1]) as $items |
+                        (.[-1]) as $turno |
+                        (if $turno.emb_u != null then norm($turno.emb_u) else 0 end) as $nu |
+                        $items[ ] |
+                        select(
+                            (((.messages[0].content // "") as $u | ($cast | index($u)) == null)) and
+                            (
+                                $nu == 0 or
+                                .emb_u == null or
+                                ((.emb_u | length) != ($turno.emb_u | length)) or
+                                ((dot(.emb_u; $turno.emb_u) / (norm(.emb_u) * $nu)) < $uref)
+                            )
+                        )
+                    ' < <(cat "$pf_p"; printf '%s\n' "$LINEA_TURNO") 2>/dev/null)
+                    if [[ -n "$FILT_PP" ]]; then
+                        printf '%s\n' "$FILT_PP" > "${pf_p}.$$.tmp"
+                        NUEV_LP=$(( $(wc -l < "${pf_p}.$$.tmp") ))
+                        if [[ $NUEV_LP -lt $ANT_LP ]]; then
+                            mv -f "${pf_p}.$$.tmp" "$pf_p" 2>/dev/null
+                            IND_PP_ACT=$(jq -a -c --arg arch "$BASE_PP" --argjson lin "$NUEV_LP" 'if .archivo == $arch then . + {lineas: $lin} else . end' "$INDICE_PROCEDIMENTAL" 2>/dev/null)
+                            if [[ -n "$IND_PP_ACT" ]]; then
+                                printf '%s\n' "$IND_PP_ACT" > "${INDICE_PROCEDIMENTAL}.$$.tmp"
+                                mv -f "${INDICE_PROCEDIMENTAL}.$$.tmp" "$INDICE_PROCEDIMENTAL" 2>/dev/null
+                            fi
+                        else
+                            rm -f "${pf_p}.$$.tmp" 2>/dev/null
+                        fi
+                    else
+                        rm -f "$pf_p" 2>/dev/null
+                        IND_PP_ACT=$(jq -a -c --arg arch "$BASE_PP" 'select(.archivo != $arch)' "$INDICE_PROCEDIMENTAL" 2>/dev/null)
+                        if [[ -n "$IND_PP_ACT" ]]; then
+                            printf '%s\n' "$IND_PP_ACT" > "${INDICE_PROCEDIMENTAL}.$$.tmp"
+                            mv -f "${INDICE_PROCEDIMENTAL}.$$.tmp" "$INDICE_PROCEDIMENTAL" 2>/dev/null
+                        else
+                            > "$INDICE_PROCEDIMENTAL"
+                        fi
+                    fi
+                fi
+            done
+        fi
+    fi
+
+    # 5. Reconsolidacion / rectificacion geometrica de LoRAs de sueno en conflicto con la experiencia actual
+    if [[ $MODO_INTERNO -eq 0 ]]; then
+        if [[ -s "$INDICE_LORA_DATASETS" ]]; then
+            LORAS_CONF_CAND=$(jq -r -s --argjson umb "$UMBRAL_SIM" '
+                def norm($v): ((reduce $v[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                def dot($a; $b): reduce range(0; ($a | length)) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                (.[0:-1]) as $idx |
+                (.[-1]) as $turno |
+                if ($turno.embedding == null and $turno.emb_u == null) then
+                    empty
+                else
+                    (if $turno.embedding != null then norm($turno.embedding) else 1 end) as $nt |
+                    (if $turno.emb_u != null then norm($turno.emb_u) else 1 end) as $nu |
+                    [
+                        $idx[ ] |
+                        select(((.nombre // "") | startswith("sueno_")) and .embedding != null) |
+                        (norm(.embedding)) as $ne |
+                        (if ($turno.embedding != null and (.embedding | length) == ($turno.embedding | length)) then (dot(.embedding; $turno.embedding) / ($ne * $nt)) else 0 end) as $st |
+                        (if ($turno.emb_u != null and (.embedding | length) == ($turno.emb_u | length)) then (dot(.embedding; $turno.emb_u) / ($ne * $nu)) else 0 end) as $su |
+                        (if $su > $st then $su else $st end) as $smax |
+                        select($smax >= $umb) |
+                        {nombre: .nombre, s: $smax}
+                    ] | sort_by(-.s)[:3][ ].nombre
+                end
+            ' < <(cat "$INDICE_LORA_DATASETS"; printf '%s\n' "$LINEA_TURNO") 2>/dev/null)
+
+            if [[ -n "$LORAS_CONF_CAND" ]]; then
+                U_TURNO_LIMPIO=$(jq -r '(.messages[0].content // "") | sub("^\\[[^\\]]+\\] <<[^>]+>> *"; "")' < <(printf '%s' "$LINEA_TURNO") 2>/dev/null)
+                A_TURNO_LIMPIO=$(jq -r '.messages[1].content // ""' < <(printf '%s' "$LINEA_TURNO") 2>/dev/null)
+                PROC_PARA_CONF="null"
+                if [[ -n "$LINEA_PROC" ]]; then
+                    PROC_PARA_CONF="$LINEA_PROC"
+                fi
+
+                while IFS= read -r nom_cand; do
+                    if [[ -n "$nom_cand" ]]; then
+                        DS_SRC="$DIR_LORA_DATASETS/${nom_cand}.jsonl"
+                        if [[ -s "$DIR_SUENO/$nom_cand/dataset.jsonl" ]]; then
+                            DS_SRC="$DIR_SUENO/$nom_cand/dataset.jsonl"
+                        fi
+                        if [[ -s "$DS_SRC" ]]; then
+                            CLASE_CAND="declarativo"
+                            if [[ "$nom_cand" == sueno_herr_* ]]; then
+                                CLASE_CAND="procedimental"
+                            fi
+                            PAY_CONF=$(jq -a -c -s '
+                                {
+                                    input: (
+                                        [ .[ ] | (.messages[0].content // "") ] +
+                                        [ .[ ] | (.messages[-1].content // "") ]
+                                    )
+                                }
+                            ' "$DS_SRC" 2>/dev/null)
+                            RESP_CONF=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_CONF" 2>/dev/null)
+                            if [[ -n "$RESP_CONF" ]]; then
+                                EVAL_CONF=$(jq -a -c -s \
+                                    --arg clase "$CLASE_CAND" \
+                                    --argjson uref "$UMBRAL_REFUERZO" \
+                                    --arg unew "$U_TURNO_LIMPIO" \
+                                    --arg anew "$A_TURNO_LIMPIO" '
+                                    def norm($v): ((reduce $v[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                                    def dot($a; $b): reduce range(0; ($a | length)) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                                    def mod_cmd($m):
+                                        (([ $m[ ] | select(.tool_calls != null and (.tool_calls | length) > 0) ][0].tool_calls[0].function.arguments // "{}") as $raw |
+                                        (if ($raw | type) == "string" then (try ($raw | fromjson) catch {comando: $raw}) else $raw end) |
+                                        (.comando // "") | split(" ")[0] // "");
+                                    (.[0]) as $ds |
+                                    (.[1]) as $embs |
+                                    (.[2]) as $turno |
+                                    (.[3]) as $proc |
+                                    ($ds | length) as $n |
+                                    if ($n == 0 or $turno.emb_u == null or ($embs.data // [ ] | length) < ($n * 2)) then
+                                        {conflicto: 0}
+                                    else
+                                        (norm($turno.emb_u)) as $nu |
+                                        (if $turno.emb_a != null then norm($turno.emb_a) else 0 end) as $na |
+                                        (if $proc != null then mod_cmd($proc.messages) else "" end) as $mod_new |
+                                        [
+                                            range(0; $n) as $i |
+                                            ($ds[$i]) as $item |
+                                            ($embs.data[$i].embedding) as $eu |
+                                            ($embs.data[$n + $i].embedding) as $ea |
+                                            (dot($eu; $turno.emb_u) / (norm($eu) * $nu)) as $su |
+                                            (if $na > 0 then (dot($ea; $turno.emb_a) / (norm($ea) * $na)) else 0 end) as $sa |
+                                            (mod_cmd($item.messages)) as $mod_ds |
+                                            (
+                                                if ($su >= $uref) then
+                                                    if $clase == "procedimental" then
+                                                        (if ($proc == null or $mod_new != $mod_ds or $sa < $uref) then 1 else 0 end)
+                                                    else
+                                                        (if ($proc != null or $sa < $uref) then 1 else 0 end)
+                                                    end
+                                                else
+                                                    0
+                                                end
+                                            ) as $es_conf |
+                                            {item: $item, conf: $es_conf}
+                                        ] as $evals |
+                                        ([ $evals[ ] | select(.conf == 1) ] | length) as $nconf |
+                                        if $nconf == 0 then
+                                            {conflicto: 0}
+                                        else
+                                            ([ $evals[ ] | select(.conf == 0) | .item ]) as $base_items |
+                                            (
+                                                if ($clase == "procedimental" and $proc != null) then
+                                                    $base_items + [{messages: $proc.messages}]
+                                                elif ($clase == "declarativo" and $proc == null and ($unew | length) > 0 and ($anew | length) > 0 and (($unew | startswith("<<")) | not) and (($anew | startswith("[")) | not)) then
+                                                    $base_items + [{messages: [{"role": "user", "content": $unew}, {"role": "assistant", "content": $anew}]}]
+                                                else
+                                                    $base_items
+                                                end
+                                            ) as $nuevo_ds |
+                                            {conflicto: $nconf, items: $nuevo_ds}
+                                        end
+                                    end
+                                ' < <(jq -a -c -s '.' "$DS_SRC" 2>/dev/null; printf '%s\n%s\n%s\n' "$RESP_CONF" "$LINEA_TURNO" "$PROC_PARA_CONF") 2>/dev/null)
+
+                                NUM_CONF=$(jq -r '.conflicto // 0' < <(printf '%s' "$EVAL_CONF") 2>/dev/null)
+                                if [[ "${NUM_CONF:-0}" -gt 0 ]]; then
+                                    mkdir -p "$DIR_MEM_LORA" "$DIR_SUENO/$nom_cand"
+                                    if [[ ! -f "$LORAS_RECTIFICAR" ]]; then > "$LORAS_RECTIFICAR"; fi
+                                    if ! grep -Fxq "$nom_cand" "$LORAS_RECTIFICAR" 2>/dev/null; then
+                                        printf '%s\n' "$nom_cand" >> "$LORAS_RECTIFICAR"
+                                    fi
+
+                                    # Borrar checkpoints/pesos candidatos viejos para reentrenar limpio sin arrastrar el sesgo malo
+                                    rm -f \
+                                        "$DIR_SUENO/$nom_cand/modelo.ckpt" \
+                                        "$DIR_SUENO/$nom_cand/cache.pt" \
+                                        "$DIR_SUENO/$nom_cand/best.ckpt" \
+                                        "$DIR_SUENO/$nom_cand/best.gguf" \
+                                        "$DIR_SUENO/$nom_cand/candidato.gguf" \
+                                        "$DIR_SUENO/$nom_cand/best_aprobados.txt" 2>/dev/null
+
+                                    jq -a -c '.items[ ]' < <(printf '%s' "$EVAL_CONF") > "$DIR_SUENO/$nom_cand/dataset.jsonl" 2>/dev/null
+                                    NUM_REST=$(( $(wc -l < "$DIR_SUENO/$nom_cand/dataset.jsonl") ))
+
+                                    if [[ $NUM_REST -lt "${MIN_RECUERDOS_SUENO:-3}" ]]; then
+                                        jq -a -n \
+                                            --arg nom "$nom_cand" \
+                                            --arg clase "$CLASE_CAND" \
+                                            --argjson nej "$NUM_REST" '{
+                                            nombre: $nom,
+                                            particion: "",
+                                            clase: $clase,
+                                            es_fusion: 0,
+                                            rectificacion: 1,
+                                            fase: "purgar",
+                                            ciclo: 0,
+                                            epocas_obj: 1,
+                                            mejor_epocas: 0,
+                                            lr: 0.0005,
+                                            num_ejemplos: $nej,
+                                            mejor_errores: 9999,
+                                            mejor_sim: 0.0,
+                                            reset_lr: 0
+                                        }' > "$DIR_SUENO/$nom_cand/estado.json"
+                                    else
+                                        if [[ "$CLASE_CAND" == "procedimental" ]]; then
+                                            jq -a -c '
+                                                ([ .messages[ ] | select(.tool_calls != null and (.tool_calls | length) > 0) ][0].tool_calls[0]) as $tc |
+                                                ($tc.function.arguments // "{}") as $raw_args |
+                                                (if ($raw_args | type) == "string" then (try ($raw_args | fromjson) catch {comando: $raw_args}) else $raw_args end) as $obj_args |
+                                                {
+                                                    u: (.messages[0].content // ""),
+                                                    tool_name: ($tc.function.name // "bash"),
+                                                    tool_cmd: ($obj_args.comando // ""),
+                                                    tool_out: ([ .messages[ ] | select(.role == "tool") ][0].content // ""),
+                                                    a: (.messages[-1].content // "")
+                                                }
+                                            ' "$DIR_SUENO/$nom_cand/dataset.jsonl" > "$DIR_SUENO/$nom_cand/origen.json" 2>/dev/null
+                                        else
+                                            jq -a -c '{u: .messages[0].content, a: .messages[1].content}' "$DIR_SUENO/$nom_cand/dataset.jsonl" > "$DIR_SUENO/$nom_cand/origen.json" 2>/dev/null
+                                        fi
+                                        cp -f "$DIR_SUENO/$nom_cand/origen.json" "$DIR_SUENO/$nom_cand/origen_nuevos.json" 2>/dev/null
+
+                                        # Recalcular centroide real del dataset rectificado
+                                        PAY_CENT_R=$(jq -a -c -s '{input: [ .[ ] | ((.messages[0].content // "") + " " + (.messages[-1].content // "")) ]}' "$DIR_SUENO/$nom_cand/dataset.jsonl" 2>/dev/null)
+                                        RESP_CENT_R=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_CENT_R" 2>/dev/null)
+                                        CENT_RECT=$(jq -a -c '
+                                            def norm($v): ((reduce $v[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                                            if (.data and (.data | length) > 0) then
+                                                ([ .data[ ].embedding | (norm(.)) as $n | map(. / $n) ]) as $units |
+                                                ($units[0] | length) as $dim |
+                                                (reduce range(0; $dim) as $i ([ ]; . + [(reduce $units[ ] as $u (0; . + ($u[$i] // 0))) / ($units | length)])) as $mean |
+                                                (norm($mean)) as $nm |
+                                                ($mean | map(((. / $nm) * 10000 | round) / 10000))
+                                            else
+                                                null
+                                            end
+                                        ' < <(printf '%s' "$RESP_CENT_R") 2>/dev/null)
+                                        if [[ -z "$CENT_RECT" ]]; then CENT_RECT="null"; fi
+                                        printf '%s\n' "$CENT_RECT" > "$DIR_SUENO/$nom_cand/centroide.json"
+
+                                        G_ACC_R="${GRAD_ACCUM_SUENO:-2}"
+                                        PASOS_EP_R=$(( (NUM_REST + G_ACC_R - 1) / G_ACC_R ))
+                                        if [[ $PASOS_EP_R -lt 1 ]]; then PASOS_EP_R=1; fi
+                                        EP_INIT_R=$(( ${PASOS_OBJ_SUENO:-16} / PASOS_EP_R ))
+                                        if [[ $EP_INIT_R -lt 1 ]]; then EP_INIT_R=1; fi
+
+                                        jq -a -n \
+                                            --arg nom "$nom_cand" \
+                                            --arg clase "$CLASE_CAND" \
+                                            --argjson ep0 "$EP_INIT_R" \
+                                            --argjson lr "${LR_SUENO:-0.0005}" \
+                                            --argjson nej "$NUM_REST" '{
+                                            nombre: $nom,
+                                            particion: "",
+                                            clase: $clase,
+                                            es_fusion: 0,
+                                            rectificacion: 1,
+                                            fase: "profundo",
+                                            ciclo: 0,
+                                            epocas_obj: $ep0,
+                                            mejor_epocas: 0,
+                                            lr: $lr,
+                                            num_ejemplos: $nej,
+                                            mejor_errores: 9999,
+                                            mejor_sim: 0.0,
+                                            reset_lr: 0
+                                        }' > "$DIR_SUENO/$nom_cand/estado.json"
+                                    fi
+
+                                    printf '[%s] RECTIFICACION LoRA=%s | clase=%s | conflictos=%s | restantes=%s (silenciado hasta sueno)\n' \
+                                        "$(date "+%Y-%m-%d %H:%M:%S")" "$nom_cand" "$CLASE_CAND" "$NUM_CONF" "$NUM_REST" >> "$LOG_LORA_ENTRENAR"
+                                fi
+                            fi
+                        fi
+                    fi
+                done < <(printf '%s\n' "$LORAS_CONF_CAND")
             fi
         fi
     fi

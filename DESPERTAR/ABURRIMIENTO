@@ -23,6 +23,60 @@ dormir_puerto() {
     fi
 }
 
+REFLEJO_OK=1
+reflejo_hipnico() {
+    REFLEJO_OK=1
+    # 1. Comprobar estabilidad de escritura: esperar si ENTRADA --consolidar sigue activo
+    ESPERA_L=0
+    while [[ $ESPERA_L -lt 30 ]]; do
+        if [[ ! -s "$LOCK_MEMORIA" ]]; then break; fi
+        LPID_H=$(cat "$LOCK_MEMORIA" 2>/dev/null)
+        if [[ -z "$LPID_H" ]]; then break; fi
+        if ! kill -0 "$LPID_H" 2>/dev/null; then
+            rm -f "$LOCK_MEMORIA" 2>/dev/null
+            break
+        fi
+        sleep 0.5
+        ESPERA_L=$((ESPERA_L + 1))
+    done
+    if [[ -s "$LOCK_MEMORIA" ]]; then
+        LPID_H=$(cat "$LOCK_MEMORIA" 2>/dev/null)
+        if [[ -n "$LPID_H" ]]; then
+            if kill -0 "$LPID_H" 2>/dev/null; then
+                printf '[%s] [REFLEJO HIPNICO] Abortado paso a sueno: consolidacion activa (PID %s)\n' "$(date "+%Y-%m-%d %H:%M:%S")" "$LPID_H" >> "$LOG_SUENO"
+                REFLEJO_OK=0
+            fi
+        fi
+    fi
+
+    # 2. Verificar integridad JSONL de la memoria antes de entrar en sueno profundo
+    if [[ $REFLEJO_OK -eq 1 ]]; then
+        for f_chk in "$HIPOCAMPO" "$RELOJ" "$INDICE_PROCEDIMENTAL"; do
+            if [[ -s "$f_chk" ]]; then
+                if ! jq -e -s '.' "$f_chk" >/dev/null 2>/dev/null; then
+                    sleep 2
+                    if ! jq -e -s '.' "$f_chk" >/dev/null 2>/dev/null; then
+                        printf '[%s] [REFLEJO HIPNICO] Abortado paso a sueno: JSON invalido en %s\n' "$(date "+%Y-%m-%d %H:%M:%S")" "$(basename "$f_chk")" >> "$LOG_SUENO"
+                        REFLEJO_OK=0
+                        break
+                    fi
+                fi
+            fi
+        done
+    fi
+
+    # 3. Doble check final de actividad del usuario
+    if [[ $REFLEJO_OK -eq 1 ]]; then
+        ULTIMA_FIN=0
+        if [[ -s "$ULTIMA_INTERACCION" ]]; then
+            ULTIMA_FIN=$(cat "$ULTIMA_INTERACCION" 2>/dev/null)
+        fi
+        if [[ "$ULTIMA_FIN" != "$ULTIMA_VISTA" ]]; then
+            REFLEJO_OK=0
+        fi
+    fi
+}
+
 while true; do
     if [[ ! -e "$PARADA_OLVIDO" ]]; then
         OLV_VIVO=0
@@ -71,13 +125,16 @@ while true; do
             ULTIMA_POST=$(cat "$ULTIMA_INTERACCION" 2>/dev/null)
         fi
         if [[ "$ULTIMA_POST" == "$ULTIMA_VISTA" ]]; then
-            dormir_puerto "$PUERTO"
-            dormir_puerto "$PUERTO_MEMORIA"
-            rm -f "$PID_ABURRIMIENTO" "$SENAL_DESPERTAR" 2>/dev/null
-            if [[ -x "$DIR/DESPERTAR/DORMIR" ]]; then
-                true < <(setsid "$DIR/DESPERTAR/DORMIR" </dev/null >/dev/null 2>/dev/null)
+            reflejo_hipnico
+            if [[ $REFLEJO_OK -eq 1 ]]; then
+                dormir_puerto "$PUERTO"
+                dormir_puerto "$PUERTO_MEMORIA"
+                rm -f "$PID_ABURRIMIENTO" "$SENAL_DESPERTAR" 2>/dev/null
+                if [[ -x "$DIR/DESPERTAR/DORMIR" ]]; then
+                    true < <(setsid "$DIR/DESPERTAR/DORMIR" </dev/null >/dev/null 2>/dev/null)
+                fi
+                exit 0
             fi
-            exit 0
         fi
     fi
 

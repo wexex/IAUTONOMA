@@ -29,6 +29,30 @@ registrar_sueno() {
     printf '[%s] %s\n' "$(date "+%Y-%m-%d %H:%M:%S")" "$1" >> "$LOG_SUENO"
 }
 
+registrar_reloj_sueno() {
+    RES_REL="$1"
+    F_RS=$(date "+%Y-%m-%d %H:%M:%S")
+    TS_RS=$(date +%s)
+    if [[ ! -f "$RELOJ" ]]; then > "$RELOJ"; fi
+    LIN_RS=$(jq -a -c -n --arg f "$F_RS" --argjson ts "$TS_RS" --arg a "$RES_REL" '{
+        fecha: $f,
+        ts: $ts,
+        evento: "sueno",
+        messages: [
+            {"role": "user", "content": "<<Sueno consolidado>>"},
+            {"role": "assistant", "content": $a}
+        ],
+        embedding: null
+    }' 2>/dev/null)
+    if [[ -n "$LIN_RS" ]]; then
+        RELOJ_S=$(jq -a -c -s --argjson maxp "$MAX_PARTICION" '.[-$maxp:][ ]' < <(cat "$RELOJ"; printf '%s\n' "$LIN_RS") 2>/dev/null)
+        if [[ -n "$RELOJ_S" ]]; then
+            printf '%s\n' "$RELOJ_S" > "${RELOJ}.$$.tmp"
+            mv -f "${RELOJ}.$$.tmp" "$RELOJ" 2>/dev/null
+        fi
+    fi
+}
+
 dormir_puerto() {
     P_OBJ="$1"
     if command -v taskkill >/dev/null 2>/dev/null; then
@@ -186,6 +210,45 @@ actualizar_indice_lora() {
     fi
 }
 
+quitar_de_rectificar() {
+    NOM_Q="$1"
+    if [[ -s "$LORAS_RECTIFICAR" ]]; then
+        REST_R=$(grep -Fxv "$NOM_Q" "$LORAS_RECTIFICAR" 2>/dev/null)
+        if [[ -n "$REST_R" ]]; then
+            printf '%s\n' "$REST_R" > "${LORAS_RECTIFICAR}.$$.tmp"
+            mv -f "${LORAS_RECTIFICAR}.$$.tmp" "$LORAS_RECTIFICAR" 2>/dev/null
+        else
+            rm -f "$LORAS_RECTIFICAR" 2>/dev/null
+        fi
+    fi
+}
+
+purgar_lora_obsoleto() {
+    NOM_P="$1"
+    rm -f "$DIR_LORA_PESOS/${NOM_P}.gguf" "$DIR_LORA_DATASETS/${NOM_P}.jsonl" "$DIR_LORA/${NOM_P}.desc" 2>/dev/null
+    if [[ -s "$INDICE_LORA_DATASETS" ]]; then
+        IND_P=$(jq -a -c --arg nom "$NOM_P" 'select(.nombre != $nom)' "$INDICE_LORA_DATASETS" 2>/dev/null)
+        if [[ -n "$IND_P" ]]; then
+            printf '%s\n' "$IND_P" > "${INDICE_LORA_DATASETS}.$$.tmp"
+            mv -f "${INDICE_LORA_DATASETS}.$$.tmp" "$INDICE_LORA_DATASETS" 2>/dev/null
+        else
+            > "$INDICE_LORA_DATASETS"
+        fi
+    fi
+    if [[ -s "$INDICE_LORA" ]]; then
+        IND_ML=$(jq -a -c --arg nom "$NOM_P" 'select(.nombre != $nom)' "$INDICE_LORA" 2>/dev/null)
+        if [[ -n "$IND_ML" ]]; then
+            printf '%s\n' "$IND_ML" > "${INDICE_LORA}.$$.tmp"
+            mv -f "${INDICE_LORA}.$$.tmp" "$INDICE_LORA" 2>/dev/null
+        else
+            > "$INDICE_LORA"
+        fi
+    fi
+    rm -f "$DIR_MEM_LORA/huella" 2>/dev/null
+    quitar_de_rectificar "$NOM_P"
+    rm -rf "$DIR_SUENO/$NOM_P" 2>/dev/null
+}
+
 # FASE 1: SUENO LIGERO (Solo prepara: organiza por clase vectorial declarativa o procedimental, fusiona <50% o abre particion correlativa y arma dataset)
 fase_ligero() {
     TAREA_ELEGIDA=""
@@ -201,7 +264,7 @@ fase_ligero() {
     LISTA_PARTS=( )
     PARTS_EN_CURSO=( )
 
-    # 1a. Tareas ya preparadas / pausadas en SUENO/
+    # 1a. Tareas ya preparadas / pausadas / rectificaciones en SUENO/
     for est in "$DIR_SUENO"/*/estado.json; do
         if [[ -s "$est" ]]; then
             NOM_E=$(jq -r '.nombre // empty' "$est" 2>/dev/null)
@@ -209,7 +272,11 @@ fase_ligero() {
             FASE_E=$(jq -r '.fase // empty' "$est" 2>/dev/null)
             CLASE_E=$(jq -r '.clase // "declarativo"' "$est" 2>/dev/null)
             if [[ -n "$NOM_E" ]]; then
-                if [[ "$FASE_E" != "completado" ]]; then
+                if [[ "$FASE_E" == "purgar" ]]; then
+                    purgar_lora_obsoleto "$NOM_E"
+                    registrar_sueno "[N1/N2 LIGERO] LoRA $NOM_E purgado tras rectificacion (< $MIN_RECUERDOS_SUENO ejemplos validos)."
+                    printf '[%s] PURGA_RECTIFICACION LoRA=%s | clase=%s\n' "$(date "+%Y-%m-%d %H:%M:%S")" "$NOM_E" "$CLASE_E" >> "$LOG_LORA_ENTRENAR"
+                elif [[ "$FASE_E" != "completado" ]]; then
                     LISTA_CLAVES+=("$NOM_E")
                     LISTA_TIPOS+=("activa")
                     LISTA_CLASES+=("$CLASE_E")
@@ -420,11 +487,19 @@ fase_ligero() {
                     if [[ -n "$CAND_FUSION" ]]; then
                         NOM_F=$(jq -r '.nombre // empty' < <(printf '%s' "$CAND_FUSION") 2>/dev/null)
                         if [[ -n "$NOM_F" ]]; then
-                            if [[ ! -d "$DIR_SUENO/$NOM_F" ]]; then
-                                if [[ -s "$DIR_LORA_DATASETS/${NOM_F}.jsonl" ]]; then
-                                    LORA_FUSION="$NOM_F"
-                                    LINEAS_FUSION=$(jq -r '.lineas // 0' < <(printf '%s' "$CAND_FUSION") 2>/dev/null)
-                                    EMB_FUSION=$(jq -a -c '.embedding // null' < <(printf '%s' "$CAND_FUSION") 2>/dev/null)
+                            EN_RECT_F=0
+                            if [[ -s "$LORAS_RECTIFICAR" ]]; then
+                                if grep -Fxq "$NOM_F" "$LORAS_RECTIFICAR" 2>/dev/null; then
+                                    EN_RECT_F=1
+                                fi
+                            fi
+                            if [[ $EN_RECT_F -eq 0 ]]; then
+                                if [[ ! -d "$DIR_SUENO/$NOM_F" ]]; then
+                                    if [[ -s "$DIR_LORA_DATASETS/${NOM_F}.jsonl" ]]; then
+                                        LORA_FUSION="$NOM_F"
+                                        LINEAS_FUSION=$(jq -r '.lineas // 0' < <(printf '%s' "$CAND_FUSION") 2>/dev/null)
+                                        EMB_FUSION=$(jq -a -c '.embedding // null' < <(printf '%s' "$CAND_FUSION") 2>/dev/null)
+                                    fi
                                 fi
                             fi
                         fi
@@ -1240,10 +1315,14 @@ fase_rem() {
                     cp -f "$DIR_T/dataset.jsonl" "$OUT_DS" 2>/dev/null
                     LIN_FINAL=$(( $(wc -l < "$OUT_DS") ))
                     actualizar_indice_lora "$NOM_T" "$LIN_FINAL" "$DIR_T/centroide.json"
-                    vaciar_aprobados_capa "$PART_ORIG" "$APROB_TMP" "$IND_ORIG"
+                    if [[ -n "$PART_ORIG" ]]; then
+                        vaciar_aprobados_capa "$PART_ORIG" "$APROB_TMP" "$IND_ORIG"
+                    fi
+                    quitar_de_rectificar "$NOM_T"
                     rm -rf "$DIR_T"
                     rm -f "$DIR_MEM_LORA/huella" 2>/dev/null
-                    registrar_sueno "[REM] EXITO 0 ERROR en $NOM_T ($LIN_FINAL ejemplos) -> Consolidado en $OUT_GGUF y vaciado de $PART_ORIG."
+                    registrar_reloj_sueno "Consolide en sueno el adaptador $NOM_T ($LIN_FINAL recuerdos)."
+                    registrar_sueno "[REM] EXITO 0 ERROR en $NOM_T ($LIN_FINAL ejemplos) -> Consolidado en $OUT_GGUF."
                 else
                     MEJORO=$(jq -r -n --argjson e "$NUM_ERRORES" --argjson me "$MEJ_ERR" --argjson s "$SIM_MEDIA" --argjson ms "$MEJ_SIM" '
                         if ($e < $me) or ($e == $me and $s >= $ms) then 1 else 0 end
@@ -1259,6 +1338,7 @@ fase_rem() {
                     fi
 
                     if [[ $CICLO_SIG -ge "${MAX_CICLOS_REM:-4}" ]]; then
+                        ES_RECT_T=$(jq -r '.rectificacion // 0' "$EST_F" 2>/dev/null)
                         if [[ -s "$DIR_T/best_aprobados.txt" ]]; then
                             if [[ -s "$DIR_T/best.gguf" ]]; then
                                 DS_APROB=$(jq -a -c -s '
@@ -1273,13 +1353,20 @@ fase_rem() {
                                     actualizar_indice_lora "$NOM_T" "$LIN_FINAL" "$DIR_T/centroide.json"
                                 fi
                             fi
-                            vaciar_aprobados_capa "$PART_ORIG" "$DIR_T/best_aprobados.txt" "$IND_ORIG"
+                            if [[ -n "$PART_ORIG" ]]; then
+                                vaciar_aprobados_capa "$PART_ORIG" "$DIR_T/best_aprobados.txt" "$IND_ORIG"
+                            fi
+                            quitar_de_rectificar "$NOM_T"
                             rm -f "$DIR_MEM_LORA/huella" 2>/dev/null
                             registrar_sueno "[REM] Tope de ciclos ($MAX_CICLOS_REM) en $NOM_T -> Promovido mejor LoRA (errores=$MEJ_ERR, sim=$MEJ_SIM) y vaciados aprobados."
+                            rm -rf "$DIR_T"
+                        elif [[ "${ES_RECT_T:-0}" -eq 1 ]]; then
+                            purgar_lora_obsoleto "$NOM_T"
+                            registrar_sueno "[REM] Tope de ciclos ($MAX_CICLOS_REM) en rectificacion de $NOM_T sin aprobados -> LoRA obsoleto purgado."
                         else
                             registrar_sueno "[REM] Tope de ciclos ($MAX_CICLOS_REM) en $NOM_T sin aprobados -> Conservado estado previo sin sobrescribir."
+                            rm -rf "$DIR_T"
                         fi
-                        rm -rf "$DIR_T"
                     elif [[ "$MEJORO" -eq 1 ]]; then
                         EP_EXTRA=$(jq -r -n --argjson e "$NUM_ERRORES" --argjson tot "$TOTAL_EXAM" --argjson pobj "${PASOS_OBJ_SUENO:-16}" --argjson pep "$PASOS_EP" '
                             ((($pobj * 0.5) * ($e / $tot) / $pep) | floor) as $calc |

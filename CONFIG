@@ -22,8 +22,10 @@ PUERTO_MEMORIA="8082"
 URL_MEMORIA="http://${HOST}:${PUERTO_MEMORIA}/v1/embeddings"
 MODELO_MEMORIA="$DIR/../MODELO/Qwen3-Embedding-0.6B-Q8_0.gguf"
 
-# Umbrales de similitud de refuerzo persistente
-UMBRAL_SIM="0.45"
+# Umbrales de similitud por capa (memoria, modulos, margen y refuerzo persistente)
+UMBRAL_SIM="0.52"
+UMBRAL_MODULO="0.55"
+UMBRAL_GAP_MODULO="0.10"
 UMBRAL_REFUERZO="0.80"
 UMBRAL_PERSISTENTE="0.99"
 
@@ -48,9 +50,13 @@ DIR_MODULOS="$DIR/MODULOS"
 DIR_MEMORIA="$DIR/MEMORIA"
 DIR_REGISTROS="$DIR/REGISTROS"
 
-# Hipocampo (momento presente), Memoria episodica (1 semana), Persistente (1 anio) y Procedimental (herramientas para sueno)
+# Hipocampo (momento presente), Reloj (ciclo biologico), Episodica (1 semana), Persistente (1 anio) y Procedimental (herramientas para sueno)
 HIPOCAMPO="$DIR_MEMORIA/hipocampo.json"
+RELOJ="$DIR_MEMORIA/reloj.json"
+MAX_HILO="2"
 MAX_HIPOCAMPO="3"
+MAX_RELOJ="2"
+VIGENCIA_HERRAMIENTA="300"
 INDICE_EPISODICA="$DIR_MEMORIA/indice_episodica.json"
 PREFIJO_EPISODICA="episodica"
 INDICE_PERSISTENTE="$DIR_MEMORIA/indice_persistente.json"
@@ -79,12 +85,13 @@ DIR_LORA_DATASETS="$DIR_LORA/DATASETS"
 INDICE_LORA_DATASETS="$DIR_LORA_DATASETS/indice.json"
 DIR_MEM_LORA="$DIR_MEMORIA/LORA"
 INDICE_LORA="$DIR_MEM_LORA/indice.json"
+LORAS_RECTIFICAR="$DIR_MEM_LORA/rectificar"
 DIR_ENTRENAMIENTO="$DIR/../MODELO/ENTRENAMIENTO"
 MODELO_BASE_HF="Qwen/$NOMBRE_IA"
 LORA_BASE="criterio_iautonoma"
 LORA_ESCALA="0.70"
 MAX_LORAS_ACTIVOS="2"
-UMBRAL_LORA="0.45"
+UMBRAL_LORA="0.55"
 URL_LORA="http://${HOST}:${PUERTO}/lora-adapters"
 
 # Historial de todas las interacciones

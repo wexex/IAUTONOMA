@@ -29,6 +29,14 @@ H_MEM=$(( ${DECAIMIENTO_MEMORIA} ))
 H_PER=$(( ${DECAIMIENTO_PERSISTENTE} ))
 H_CAS=$(( ${DECAIMIENTO_CASTIGO} ))
 
+TS_AHORA=$(date +%s)
+FECHA_AHORA=$(date "+%Y-%m-%d %H:%M:%S")
+TS_DESPERTAR=0
+if [[ -s "$RELOJ" ]]; then
+    TS_DESP_R=$(jq -r -s '[ .[ ] | select(type == "object" and .evento == "despertar" and (.ts != null)) | .ts ] | last // 0' "$RELOJ" 2>/dev/null)
+    if [[ -n "$TS_DESP_R" ]]; then TS_DESPERTAR="$TS_DESP_R"; fi
+fi
+
 read -r NORM_DISPARO_HIP NORM_DISPARO_MEM NORM_DISPARO_PER < <(jq -r -n \
     --argjson u "$UMBRAL_SIM" \
     --argjson p "$PESO_INICIAL" \
@@ -55,6 +63,84 @@ if [[ -n "$ENTRADA_VEC" ]]; then
 fi
 VEC_PURO="$VEC_CONSULTA"
 export VEC_CONSULTA
+
+MAX_SIM_MOD="0.0"
+GAP_MOD="0.0"
+MODULO_DOMINANTE="0"
+calcular_max_sim_mod() {
+    MAX_SIM_MOD="0.0"
+    GAP_MOD="0.0"
+    MODULO_DOMINANTE="0"
+    if [[ -n "$VEC_CONSULTA" ]]; then
+        if [[ "$VEC_CONSULTA" != "null" ]]; then
+            MOD_FILES=( )
+            for mf in "$DIR_MEM_MODULOS"/modulos_*.json; do
+                if [[ -s "$mf" ]]; then MOD_FILES+=("$mf"); fi
+            done
+            if [[ ${#MOD_FILES[@]} -gt 0 ]]; then
+                IFS=$'\t' read -r MAX_SIM_MOD GAP_MOD MODULO_DOMINANTE < <(jq -r -s \
+                    --argjson umod "${UMBRAL_MODULO:-0.62}" \
+                    --argjson ugap "${UMBRAL_GAP_MODULO:-0.06}" \
+                    --argjson uref "${UMBRAL_REFUERZO:-0.80}" '
+                    def norm($a): ((reduce $a[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                    def dot($a; $b): reduce range(0; ($a | length)) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                    (.[0]) as $q |
+                    (norm($q)) as $nq |
+                    (
+                        [
+                            .[1:][ ] |
+                            select(type == "object" and .embedding != null and ((.embedding | length) == ($q | length))) |
+                            (dot(.embedding; $q) / (norm(.embedding) * $nq))
+                        ] | sort | reverse
+                    ) as $sims |
+                    ($sims[0] // 0.0) as $s1 |
+                    ($sims[(($sims | length) / 2 | floor)] // 0.0) as $smed |
+                    ($s1 - $smed) as $gap |
+                    (if ($s1 >= $umod and $gap >= $ugap) then 1 else 0 end) as $dom |
+                    "\($s1)\t\($gap)\t\($dom)"
+                ' < <(printf '%s\n' "$VEC_CONSULTA"; cat "${MOD_FILES[@]}") 2>/dev/null)
+                if [[ -z "$MAX_SIM_MOD" ]]; then MAX_SIM_MOD="0.0"; fi
+                if [[ -z "$GAP_MOD" ]]; then GAP_MOD="0.0"; fi
+                if [[ -z "$MODULO_DOMINANTE" ]]; then MODULO_DOMINANTE="0"; fi
+            fi
+        fi
+    fi
+}
+calcular_max_sim_mod
+MAX_SIM_MOD_PURO="$MAX_SIM_MOD"
+GAP_MOD_PURO="$GAP_MOD"
+MODULO_DOMINANTE_PURO="$MODULO_DOMINANTE"
+
+# Si la frase aislada no domino un modulo pero el ultimo turno inmediato fue una herramienta, re-evaluar con contexto del hilo (q + h) para resolver frases anaforicas ("que hay dentro", "miralo")
+VEC_CTX_HERR=""
+if [[ "${MODULO_DOMINANTE_PURO:-0}" -eq 0 ]]; then
+    if [[ "$VEC_PURO" != "null" ]]; then
+        if [[ -s "$HIPOCAMPO" ]]; then
+            VEC_CTX_HERR=$(jq -a -c -s '
+                (.[0]) as $q |
+                ([ .[1:][ ] | select(type == "object" and ((.messages[0].content // "") | startswith("<<") | not) and .embedding != null) ][-1] // null) as $ult |
+                if ($q != null and $ult != null and (($ult.herramienta // 0) == 1 or (($ult.messages[1].content // "") | startswith("[")))) then
+                    ($ult.embedding) as $h |
+                    ([$q[:1024], $h[:1024]] | transpose | map((.[0] // 0) + (.[1] // 0))) as $s |
+                    (($s | map(. * .) | add | sqrt) + 0.000001) as $ns |
+                    ($s | map(((. / $ns) * 10000 | round) / 10000))
+                else
+                    empty
+                end
+            ' < <(printf '%s\n' "$VEC_PURO"; cat "$HIPOCAMPO") 2>/dev/null)
+            if [[ -n "$VEC_CTX_HERR" ]]; then
+                VEC_CONSULTA="$VEC_CTX_HERR"
+                calcular_max_sim_mod
+                VEC_CONSULTA="$VEC_PURO"
+                if [[ "${MODULO_DOMINANTE:-0}" -eq 1 ]]; then
+                    MAX_SIM_MOD_PURO="$MAX_SIM_MOD"
+                    GAP_MOD_PURO="$GAP_MOD"
+                    MODULO_DOMINANTE_PURO="1"
+                fi
+            fi
+        fi
+    fi
+fi
 
 # Enrutador vectorial de adaptadores LoRA por demanda (POST /lora-adapters)
 enrutar_loras() {
@@ -164,37 +250,22 @@ enrutar_loras() {
             IND_LORA_JSON=$(jq -a -c -s '.' "$INDICE_LORA" 2>/dev/null)
             if [[ -z "$IND_LORA_JSON" ]]; then IND_LORA_JSON="[ ]"; fi
         fi
-        MAX_SIM_MOD="0.0"
-        if [[ -n "$VEC_CONSULTA" ]]; then
-            if [[ "$VEC_CONSULTA" != "null" ]]; then
-                MOD_FILES=( )
-                for mf in "$DIR_MEM_MODULOS"/modulos_*.json; do
-                    if [[ -s "$mf" ]]; then MOD_FILES+=("$mf"); fi
-                done
-                if [[ ${#MOD_FILES[@]} -gt 0 ]]; then
-                    MAX_SIM_MOD=$(jq -r -s '
-                        def norm($a): ((reduce $a[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
-                        def dot($a; $b): reduce range(0; ($a | length)) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
-                        (.[0]) as $q |
-                        (norm($q)) as $nq |
-                        (
-                            [
-                                .[1:][ ] |
-                                select(type == "object" and .embedding != null and ((.embedding | length) == ($q | length))) |
-                                (dot(.embedding; $q) / (norm(.embedding) * $nq))
-                            ] | max // 0.0
-                        )
-                    ' < <(printf '%s\n' "$VEC_CONSULTA"; cat "${MOD_FILES[@]}") 2>/dev/null)
-                    if [[ -z "$MAX_SIM_MOD" ]]; then MAX_SIM_MOD="0.0"; fi
-                fi
-            fi
+        calcular_max_sim_mod
+        RECT_JSON="[ ]"
+        if [[ -s "$LORAS_RECTIFICAR" ]]; then
+            RECT_JSON=$(jq -a -R -s -c 'split("\n") | map(gsub("\r$"; "") | select(length > 0))' "$LORAS_RECTIFICAR" 2>/dev/null)
+            if [[ -z "$RECT_JSON" ]]; then RECT_JSON="[ ]"; fi
         fi
         PAYLOAD_LORAS=$(jq -a -c -s \
             --arg base "$LORA_BASE" \
             --argjson esc "${LORA_ESCALA:-1.0}" \
-            --argjson umb "${UMBRAL_LORA:-0.45}" \
+            --argjson umb "${UMBRAL_LORA:-0.55}" \
             --argjson maxa "${MAX_LORAS_ACTIVOS:-2}" \
-            --argjson maxm "${MAX_SIM_MOD:-0.0}" '
+            --argjson maxm "${MAX_SIM_MOD:-0.0}" \
+            --argjson moddom "${MODULO_DOMINANTE_PURO:-0}" \
+            --argjson haymem "${HAY_MEM_SEM:-0}" \
+            --argjson rect "$RECT_JSON" \
+            --argjson interno "${MODO_INTERNO:-0}" '
             def norm($a): ((reduce $a[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
             def dot($a; $b): reduce range(0; ($a | length)) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
             (.[0] // [ ]) as $srv |
@@ -213,15 +284,22 @@ enrutar_loras() {
                     es_base: ($nom == $base),
                     es_cur: ($nom | startswith("curiosidad_")),
                     es_herr: ($nom | startswith("sueno_herr_")),
+                    en_rect: (($rect | index($nom)) != null),
                     sim: (if ($q != null and $ev != null) then (dot($ev; $q) / (norm($ev) * $nq)) else 0 end)
                 }
             ] as $eval |
-            ([ $eval[ ] | select((.es_base | not) and (.es_cur | not) and (.es_herr or (.sim >= $maxm)) and .sim >= $umb) ] | sort_by(-.sim)) as $saber |
             (
-                if ($saber | length) > 0 then
-                    $saber[:$maxa] | map(.id)
+                if $interno == 1 then
+                    [ ]
                 else
-                    [ $eval[ ] | select(.es_cur and .sim >= $umb and .sim >= $maxm) ] | sort_by(-.sim)[:1] | map(.id)
+                    ([ $eval[ ] | select((.es_base | not) and (.es_cur | not) and (.en_rect | not) and (.es_herr or (.sim >= $maxm)) and .sim >= $umb) ] | sort_by(-.sim)) as $saber |
+                    if ($saber | length) > 0 then
+                        $saber[:$maxa] | map(.id)
+                    elif ($haymem == 0 and $moddom == 0) then
+                        [ $eval[ ] | select(.es_cur and (.en_rect | not) and .sim >= $umb and .sim >= $maxm) ] | sort_by(-.sim)[:1] | map(.id)
+                    else
+                        [ ]
+                    end
                 end
             ) as $ganadores |
             (if ($ganadores | length) > 0 then ($esc * 0.7) else $esc end) as $esc_base |
@@ -354,11 +432,23 @@ ascender_a_persistente() {
     fi
 }
 
+# Umbrales encadenados por fase (relativos entre UMBRAL_SIM y UMBRAL_REFUERZO): uh (Hipocampo) -> ue (Episodica) -> up (Persistente)
+IFS=$'\t' read -r UMBRAL_HIP UMBRAL_EPI UMBRAL_PER < <(jq -r -n \
+    --argjson sim "$UMBRAL_SIM" \
+    --argjson ref "$UMBRAL_REFUERZO" '
+    ($ref - $sim) as $d |
+    "\($sim)\t\((($sim + ($d * 0.25)) * 10000 | round) / 10000)\t\((($sim + ($d * 0.50)) * 10000 | round) / 10000)"
+' 2>/dev/null)
+if [[ -z "$UMBRAL_HIP" ]]; then UMBRAL_HIP="$UMBRAL_SIM"; fi
+if [[ -z "$UMBRAL_EPI" ]]; then UMBRAL_EPI="$UMBRAL_SIM"; fi
+if [[ -z "$UMBRAL_PER" ]]; then UMBRAL_PER="$UMBRAL_SIM"; fi
+
 buscar_y_reforzar_capa() {
     CAPA_IND="$1"
     PUEDE_ASCENDER="$2"
     CAPA_ND="$3"
     APLICAR_REF="${4:-1}"
+    CAPA_UMB="${5:-$UMBRAL_SIM}"
 
     if [[ -s "$CAPA_IND" ]]; then
         PARTICIONES_BUSCAR=$(jq -r -s --argjson umb "$UMBRAL_SIM" '
@@ -395,18 +485,52 @@ buscar_y_reforzar_capa() {
                                 GAN_TOPE="${payload_line#*	}"
                             fi
                         done < <(jq -a -r -s \
-                            --argjson umb "$UMBRAL_SIM" \
+                            --argjson umb "$CAPA_UMB" \
+                            --argjson uref "$UMBRAL_REFUERZO" \
                             --argjson nd "$CAPA_ND" \
                             --argjson pini "$PESO_INICIAL" \
                             --argjson maxm "$MAX_MEMORIA" \
-                            --argjson ref "$APLICAR_REF" '
+                            --argjson ref "$APLICAR_REF" \
+                            --argjson ahora_ts "$TS_AHORA" \
+                            --arg ahora_f "$FECHA_AHORA" \
+                            --argjson ts_desp "$TS_DESPERTAR" \
+                            --argjson vig "${VIGENCIA_HERRAMIENTA:-60}" \
+                            --argjson umod "${UMBRAL_MODULO:-0.55}" \
+                            --argjson maxsim_mod "${MAX_SIM_MOD:-0.0}" \
+                            --arg qtxt "$ENTRADA_VEC" '
                             def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
                             def dot($a; $b): reduce range(0; 1024) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                            def toks($s): [ ($s // "" | ascii_downcase | scan("[a-z0-9_-]{3,}")) ] | unique;
+                            def lex($qt; $txt):
+                                if ($qt | length) == 0 then 0.0
+                                else
+                                    (toks($txt)) as $dt |
+                                    (reduce $qt[ ] as $t (0; . + ($t | length))) as $tot |
+                                    (reduce $qt[ ] as $t (0; . + (if ($dt | index($t)) != null then ($t | length) else 0 end))) as $hit |
+                                    if $tot > 0 then ($hit / $tot) else 0.0 end
+                                end;
+                            def ymd_dias($y; $m; $d):
+                                (if $m <= 2 then ($y - 1) else $y end) as $yr |
+                                (if $m <= 2 then ($m + 12) else $m end) as $mo |
+                                (($yr * 365) + (($yr / 4) | floor) - (($yr / 100) | floor) + (($yr / 400) | floor) + (((153 * ($mo - 3) + 2) / 5) | floor) + $d);
+                            def fseg($f):
+                                if ($f != null and ($f | length) >= 19) then
+                                    (try ($f[0:4] | tonumber) catch 0) as $y |
+                                    (try ($f[5:7] | tonumber) catch 0) as $mo |
+                                    (try ($f[8:10] | tonumber) catch 0) as $d |
+                                    (try ($f[11:13] | tonumber) catch 0) as $h |
+                                    (try ($f[14:16] | tonumber) catch 0) as $mi |
+                                    (try ($f[17:19] | tonumber) catch 0) as $s |
+                                    if $y > 0 then ((ymd_dias($y; $mo; $d) * 86400) + ($h * 3600) + ($mi * 60) + $s) else 0 end
+                                else 0 end;
+                            (fseg($ahora_f)) as $ahora_seg |
+                            (($uref + 1.0) / 2) as $u_rep |
+                            (toks($qtxt)) as $qtoks |
                             (.[0]) as $q |
                             (.[1:]) as $items |
                             if $q == null then
                                 ([ $items[ ] | select(type == "object" and (.embedding == null or norm(.embedding) > $nd)) ][-$maxm:][ ] |
-                                 "C\t" + ({fecha: .fecha, messages: .messages, _sim: 1, _herr: (if ((.herramienta // 0) == 1 or ((.messages[1].content // "") | startswith("["))) then 1 else 0 end)} | tojson))
+                                 "C\t" + ({fecha: .fecha, ts: (.ts // null), messages: .messages, _sim: 1, _herr: (if ((.herramienta // 0) == 1 or ((.messages[1].content // "") | startswith("["))) then 1 else 0 end)} | tojson))
                             else
                                 (norm($q)) as $nq |
                                 [
@@ -418,7 +542,19 @@ buscar_y_reforzar_capa() {
                                             (dot(.value.embedding; $q) / ($ne * $nq)) as $c_emb |
                                             (if .value.emb_u != null then (dot(.value.emb_u; $q) / (norm(.value.emb_u) * $nq)) else 0 end) as $c_u |
                                             (if $c_u > $c_emb then $c_u else $c_emb end) as $c_max |
-                                            {key: .key, fecha: .value.fecha, messages: .value.messages, _ne: $ne, _cos: $c_max, _c_emb: $c_emb, _c_u: $c_u, _sim: ($ne * $c_max), _herr: (if $es_herr then 1 else 0 end)}
+                                            (
+                                                if (.value.ts != null and (.value.ts | type) == "number") then
+                                                    ($ahora_ts - .value.ts)
+                                                else
+                                                    (fseg(.value.fecha)) as $fs |
+                                                    if $fs > 0 then ($ahora_seg - $fs) else 999999 end
+                                                end | if . < 0 then 0 else . end
+                                            ) as $edad |
+                                            (
+                                                if ($es_herr and ($edad > $vig or ($ts_desp > 0 and ((.value.ts // ($ahora_ts - $edad)) < $ts_desp)))) then 1 else 0 end
+                                            ) as $cad |
+                                            (lex($qtoks; ((.value.messages[0].content // "") + " " + (.value.messages[1].content // "")))) as $lx |
+                                            {key: .key, fecha: .value.fecha, ts: (.value.ts // null), messages: .value.messages, _ne: $ne, _cos: $c_max, _c_emb: $c_emb, _c_u: $c_u, _lex: $lx, _sim: ($ne * $c_max), _herr: (if $es_herr then 1 else 0 end), _cad: $cad}
                                         else
                                             empty
                                         end
@@ -427,9 +563,12 @@ buscar_y_reforzar_capa() {
                                     end
                                 ] as $todos |
                                 (
-                                    [ $todos[ ] | select(._cos >= $umb and (._herr == 0 or (._c_u < 0.75 and ._c_emb < 0.75))) ] |
-                                    sort_by(-._sim)[:($maxm + 1)][ ] |
-                                    "C\t" + ({fecha: .fecha, messages: .messages, _sim: ._sim, _herr: ._herr} | tojson)
+                                    [ $todos[ ] | select((._cos >= $umb or (._lex >= $umb and ._cos >= ($umb * 0.75))) and (if ._herr == 1 then (._c_u < $u_rep and (._cad == 0 or ._c_u < $umb)) else ($maxsim_mod < $umod or ._c_u < $umb) end)) ] |
+                                    sort_by(-._sim) | to_entries | map(.value + {_rsem: .key}) |
+                                    sort_by(-._lex, -._sim) | to_entries | map(.value + {_rlex: .key}) |
+                                    map(. + {_rrf: ((1 / (20 + ._rsem)) + (if ._lex > 0 then (1 / (20 + ._rlex)) else 0 end))}) |
+                                    sort_by(-._rrf)[:($maxm + 1)][ ] |
+                                    "C\t" + ({fecha: .fecha, ts: .ts, messages: .messages, _sim: ._rrf, _herr: ._herr} | tojson)
                                 ),
                                 (
                                     ([ $todos[ ] | select(._cos >= $umb) ] | sort_by(-._sim) | .[0] // null) as $gan |
@@ -517,33 +656,37 @@ filtrar_recuerdos() {
     fi
 }
 
-buscar_y_reforzar_capa "$INDICE_PERSISTENTE" "0" "$NORM_DISPARO_PER" "1"
-buscar_y_reforzar_capa "$INDICE_EPISODICA" "1" "$NORM_DISPARO_MEM" "1"
-filtrar_recuerdos
+# Precedencia estricta: si un modulo domina claramente (MODULO_DOMINANTE_PURO=1), no mezclar Episodica/Persistente en este turno
+RECUERDOS_TURNOS="[ ]"
+if [[ "${MODULO_DOMINANTE_PURO:-0}" -eq 0 ]]; then
+    buscar_y_reforzar_capa "$INDICE_PERSISTENTE" "0" "$NORM_DISPARO_PER" "1" "$UMBRAL_PER"
+    buscar_y_reforzar_capa "$INDICE_EPISODICA" "1" "$NORM_DISPARO_MEM" "1" "$UMBRAL_EPI"
+    filtrar_recuerdos
 
-# Respaldo puramente vectorial: si la entrada limpia no disparo recuerdos (>= UMBRAL_SIM), combinarla geometricamente con el ultimo turno vivo del hipocampo (q + h) / ||q + h||
-NUM_REC_PUROS=$(jq -r 'length // 0' < <(echo "$RECUERDOS_TURNOS") 2>/dev/null)
-if [[ "${NUM_REC_PUROS:-0}" -eq 0 ]]; then
-    if [[ "$VEC_CONSULTA" != "null" ]]; then
-        if [[ -s "$HIPOCAMPO" ]]; then
-            VEC_RESPALDO=$(jq -a -c -s --argjson nd "$NORM_DISPARO_HIP" '
-                (.[0]) as $q |
-                ([ .[1:][ ] | select(((.messages[0].content // "") | startswith("<<") | not) and .embedding != null and ((.embedding | map(. * .) | add | sqrt) > $nd)) ][-1].embedding // null) as $h |
-                if ($q != null and $h != null) then
-                    ([$q[:1024], $h[:1024]] | transpose | map((.[0] // 0) + (.[1] // 0))) as $s |
-                    (($s | map(. * .) | add | sqrt) + 0.000001) as $ns |
-                    ($s | map(((. / $ns) * 10000 | round) / 10000))
-                else
-                    empty
-                end
-            ' < <(printf '%s\n' "$VEC_CONSULTA"; cat "$HIPOCAMPO") 2>/dev/null)
-            if [[ -n "$VEC_RESPALDO" ]]; then
-                VEC_CONSULTA="$VEC_RESPALDO"
-                export VEC_CONSULTA
-                CANDIDATOS_RAW=""
-                buscar_y_reforzar_capa "$INDICE_PERSISTENTE" "0" "$NORM_DISPARO_PER" "0"
-                buscar_y_reforzar_capa "$INDICE_EPISODICA" "1" "$NORM_DISPARO_MEM" "0"
-                filtrar_recuerdos
+    # Respaldo puramente vectorial: si la entrada limpia no disparo recuerdos (>= UMBRAL_SIM), combinarla geometricamente con el ultimo turno vivo del hipocampo (q + h) / ||q + h||
+    NUM_REC_PUROS=$(jq -r 'length // 0' < <(echo "$RECUERDOS_TURNOS") 2>/dev/null)
+    if [[ "${NUM_REC_PUROS:-0}" -eq 0 ]]; then
+        if [[ "$VEC_CONSULTA" != "null" ]]; then
+            if [[ -s "$HIPOCAMPO" ]]; then
+                VEC_RESPALDO=$(jq -a -c -s --argjson nd "$NORM_DISPARO_HIP" '
+                    (.[0]) as $q |
+                    ([ .[1:][ ] | select(((.messages[0].content // "") | startswith("<<") | not) and .embedding != null and ((.embedding | map(. * .) | add | sqrt) > $nd)) ][-1].embedding // null) as $h |
+                    if ($q != null and $h != null) then
+                        ([$q[:1024], $h[:1024]] | transpose | map((.[0] // 0) + (.[1] // 0))) as $s |
+                        (($s | map(. * .) | add | sqrt) + 0.000001) as $ns |
+                        ($s | map(((. / $ns) * 10000 | round) / 10000))
+                    else
+                        empty
+                    end
+                ' < <(printf '%s\n' "$VEC_CONSULTA"; cat "$HIPOCAMPO") 2>/dev/null)
+                if [[ -n "$VEC_RESPALDO" ]]; then
+                    VEC_CONSULTA="$VEC_RESPALDO"
+                    export VEC_CONSULTA
+                    CANDIDATOS_RAW=""
+                    buscar_y_reforzar_capa "$INDICE_PERSISTENTE" "0" "$NORM_DISPARO_PER" "0" "$UMBRAL_PER"
+                    buscar_y_reforzar_capa "$INDICE_EPISODICA" "1" "$NORM_DISPARO_MEM" "0" "$UMBRAL_EPI"
+                    filtrar_recuerdos
+                fi
             fi
         fi
     fi
@@ -563,54 +706,291 @@ cargar_herramientas() {
     TOOLS_JSON=$(jq -s '.' < <(echo "$SPECS"))
 }
 
-# Enrutar herramientas y LoRAs con el vector definitivo (puro o respaldo vectorial)
+# Enrutar herramientas: si hubo contexto de herramienta anterior (VEC_CTX_HERR) o ningun modulo domino en solitario, enriquecer el vector con el hilo para resolver frases anaforicas ("que hay dentro")
+VEC_PREV_HERR="$VEC_CONSULTA"
+if [[ -n "$VEC_CTX_HERR" ]]; then
+    VEC_CONSULTA="$VEC_CTX_HERR"
+    export VEC_CONSULTA
+elif [[ "${MODULO_DOMINANTE_PURO:-0}" -eq 0 ]]; then
+    if [[ "$VEC_CONSULTA" == "$VEC_PURO" ]]; then
+        if [[ "$VEC_CONSULTA" != "null" ]]; then
+            if [[ -s "$HIPOCAMPO" ]]; then
+                VEC_HILO_HERR=$(jq -a -c -s --argjson nd "$NORM_DISPARO_HIP" '
+                    (.[0]) as $q |
+                    ([ .[1:][ ] | select(((.messages[0].content // "") | startswith("<<") | not) and .embedding != null and ((.embedding | map(. * .) | add | sqrt) > $nd)) ][-1].embedding // null) as $h |
+                    if ($q != null and $h != null) then
+                        ([$q[:1024], $h[:1024]] | transpose | map((.[0] // 0) + (.[1] // 0))) as $s |
+                        (($s | map(. * .) | add | sqrt) + 0.000001) as $ns |
+                        ($s | map(((. / $ns) * 10000 | round) / 10000))
+                    else
+                        empty
+                    end
+                ' < <(printf '%s\n' "$VEC_CONSULTA"; cat "$HIPOCAMPO") 2>/dev/null)
+                if [[ -n "$VEC_HILO_HERR" ]]; then
+                    VEC_CONSULTA="$VEC_HILO_HERR"
+                    export VEC_CONSULTA
+                fi
+            fi
+        fi
+    fi
+fi
 cargar_herramientas "$ENTRADA"
-enrutar_loras
+if [[ "$VEC_CONSULTA" != "$VEC_PREV_HERR" ]]; then
+    VEC_CONSULTA="$VEC_PREV_HERR"
+    export VEC_CONSULTA
+fi
 
-# 2. Cargar Hipocampo real (ultimos $MAX_HIPOCAMPO turnos activos sobre el potencial de disparo, excluyendo lecturas volatiles de herramienta repetidas explicitamente)
+# 2. Cargar Hipocampo en cascada (hilo inmediato MAX_HILO + hipocampo semantico MAX_HIPOCAMPO con frescura y sensor vigente)
 HIPOCAMPO_TURNOS="[ ]"
 if [[ -s "$HIPOCAMPO" ]]; then
-    HIPOCAMPO_TURNOS=$(jq -a -s --argjson maxh "$MAX_HIPOCAMPO" --argjson nd "$NORM_DISPARO_HIP" '
+    HIPOCAMPO_TURNOS=$(jq -a -s \
+        --argjson maxhl "${MAX_HILO:-2}" \
+        --argjson maxh "${MAX_HIPOCAMPO:-3}" \
+        --argjson nd "$NORM_DISPARO_HIP" \
+        --argjson umb "$UMBRAL_SIM" \
+        --argjson uref "$UMBRAL_REFUERZO" \
+        --argjson ahora_ts "$TS_AHORA" \
+        --arg ahora_f "$FECHA_AHORA" \
+        --argjson ts_desp "$TS_DESPERTAR" \
+        --argjson vig "${VIGENCIA_HERRAMIENTA:-60}" \
+        --argjson umod "${UMBRAL_MODULO:-0.55}" \
+        --argjson moddom "${MODULO_DOMINANTE_PURO:-0}" \
+        --argjson maxsim_mod "${MAX_SIM_MOD_PURO:-0.0}" \
+        --arg qtxt "$ENTRADA_VEC" '
         def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
         def dot($a; $b): reduce range(0; 1024) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+        def toks($s): [ ($s // "" | ascii_downcase | scan("[a-z0-9_-]{3,}")) ] | unique;
+        def lex($qt; $txt):
+            if ($qt | length) == 0 then 0.0
+            else
+                (toks($txt)) as $dt |
+                (reduce $qt[ ] as $t (0; . + ($t | length))) as $tot |
+                (reduce $qt[ ] as $t (0; . + (if ($dt | index($t)) != null then ($t | length) else 0 end))) as $hit |
+                if $tot > 0 then ($hit / $tot) else 0.0 end
+            end;
+        def ymd_dias($y; $m; $d):
+            (if $m <= 2 then ($y - 1) else $y end) as $yr |
+            (if $m <= 2 then ($m + 12) else $m end) as $mo |
+            (($yr * 365) + (($yr / 4) | floor) - (($yr / 100) | floor) + (($yr / 400) | floor) + (((153 * ($mo - 3) + 2) / 5) | floor) + $d);
+        def fseg($f):
+            if ($f != null and ($f | length) >= 19) then
+                (try ($f[0:4] | tonumber) catch 0) as $y |
+                (try ($f[5:7] | tonumber) catch 0) as $mo |
+                (try ($f[8:10] | tonumber) catch 0) as $d |
+                (try ($f[11:13] | tonumber) catch 0) as $h |
+                (try ($f[14:16] | tonumber) catch 0) as $mi |
+                (try ($f[17:19] | tonumber) catch 0) as $s |
+                if $y > 0 then ((ymd_dias($y; $mo; $d) * 86400) + ($h * 3600) + ($mi * 60) + $s) else 0 end
+            else 0 end;
+        (fseg($ahora_f)) as $ahora_seg |
+        (($uref + 1.0) / 2) as $u_rep |
+        (toks($qtxt)) as $qtoks |
         (.[0]) as $q |
         (if $q != null then norm($q) else 1 end) as $nq |
         [
             .[1:][ ] |
-            select(type == "object" and (.embedding == null or norm(.embedding) > $nd)) |
+            select(type == "object" and (.embedding == null or norm(.embedding) > $nd))
+        ] |
+        to_entries |
+        map(
+            .key as $idx |
+            .value |
             ((.herramienta // 0) == 1 or ((.messages[1].content // "") | startswith("["))) as $es_herr |
-            select(
-                ($es_herr | not) or ($q == null) or
-                (
-                    (if .emb_u != null then (dot(.emb_u; $q) / (norm(.emb_u) * $nq)) else 0 end) < 0.75 and
-                    ((if .embedding != null then (dot(.embedding; $q) / (norm(.embedding) * $nq)) else 0 end) < 0.75)
+            (
+                if (.ts != null and (.ts | type) == "number") then
+                    ($ahora_ts - .ts)
+                else
+                    (fseg(.fecha)) as $fs |
+                    if $fs > 0 then ($ahora_seg - $fs) else 999999 end
+                end | if . < 0 then 0 else . end
+            ) as $edad |
+            (
+                if ($es_herr and ($edad > $vig or ($ts_desp > 0 and ((.ts // ($ahora_ts - $edad)) < $ts_desp)))) then 1 else 0 end
+            ) as $cad |
+            (if ($q != null and .emb_u != null) then (dot(.emb_u; $q) / (norm(.emb_u) * $nq)) else 0 end) as $c_u |
+            (if ($q != null and .embedding != null) then (dot(.embedding; $q) / (norm(.embedding) * $nq)) else 0 end) as $c_e |
+            (if $c_u > $c_e then $c_u else $c_e end) as $c_max |
+            (lex($qtoks; ((.messages[0].content // "") + " " + (.messages[1].content // "")))) as $lx |
+            {
+                idx: $idx,
+                fecha: .fecha,
+                ts: (.ts // null),
+                messages: .messages,
+                sensor: (if ($cad == 0 and .sensor != null and (.sensor | length) > 0) then .sensor else null end),
+                _herr: (if $es_herr then 1 else 0 end),
+                _cad: $cad,
+                _c_u: $c_u,
+                _cos: $c_max,
+                _lex: $lx,
+                _oculto: (
+                    if ($q != null) then
+                        if $es_herr then
+                            (if ($c_u >= $u_rep or ($cad == 1 and $c_u >= $umb)) then 1 else 0 end)
+                        elif (($moddom == 1 or $maxsim_mod >= $umod) and $c_u >= $umb) then
+                            1
+                        else
+                            0
+                        end
+                    else
+                        0
+                    end
                 )
-            )
-        ][-$maxh:]
+            }
+        ) as $vivos |
+        ($vivos | length) as $tot |
+        (if ($tot - $maxhl) > 0 then ($tot - $maxhl) else 0 end) as $corte |
+        ([ $vivos[$corte:][ ] | select(._oculto == 0 and ($moddom == 0 or ._herr == 1)) ]) as $hilo |
+        (
+            if ($q != null and $corte > 0 and $moddom == 0) then
+                [ $vivos[:$corte][ ] | select(._oculto == 0 and (._cos >= $umb or (._lex >= $umb and ._cos >= ($umb * 0.75)))) ] |
+                sort_by(-._cos) | to_entries | map(.value + {_rsem: .key}) |
+                sort_by(-._lex, -._cos) | to_entries | map(.value + {_rlex: .key}) |
+                map(. + {_rrf: ((1 / (20 + ._rsem)) + (if ._lex > 0 then (1 / (20 + ._rlex)) else 0 end))}) |
+                sort_by(-._rrf)[:$maxh] |
+                sort_by(.idx)
+            else
+                [ ]
+            end
+        ) as $hip_sim |
+        ($hip_sim + $hilo) |
+        map({fecha: .fecha, ts: .ts, messages: .messages, sensor: .sensor, _cos: ._cos})
     ' < <(printf '%s\n' "${VEC_PURO:-null}"; cat "$HIPOCAMPO") 2>/dev/null)
     if [[ -z "$HIPOCAMPO_TURNOS" ]]; then HIPOCAMPO_TURNOS="[ ]"; fi
 fi
 
-# 3. Unir Recuerdos a largo plazo + Hipocampo del momento presente (sin duplicar turnos y mostrando fecha)
-MEMORIA_JSON=$(jq -a -s '
+# 2b. Memoria Reloj (conciencia de estado: se activa automaticamente al despertar, aburrirse/silencio o dormir; en charla normal solo si pregunta por el ciclo biologico)
+ES_CAMBIO_ESTADO=0
+ES_DESPERTAR=0
+if [[ "$ENTRADA" == *"$ESTIMULO_DESPERTAR"* ]]; then ES_CAMBIO_ESTADO=1; ES_DESPERTAR=1; fi
+if [[ "$ENTRADA" == *"$ESTIMULO_SILENCIO"* ]]; then ES_CAMBIO_ESTADO=1; fi
+if [[ "$ENTRADA" == *"$ESTIMULO_DORMIR"* ]]; then ES_CAMBIO_ESTADO=1; fi
+
+RELOJ_TURNOS="[ ]"
+if [[ -s "$RELOJ" ]]; then
+    if [[ "$ES_CAMBIO_ESTADO" -eq 1 ]]; then
+        RELOJ_TURNOS=$(jq -a -s --argjson maxr "${MAX_RELOJ:-2}" --argjson desp "$ES_DESPERTAR" '
+            [ .[ ] | select(type == "object" and .messages != null) ] as $evs |
+            ([ $evs[ ] | select(.evento != "sueno" and (if $desp == 1 then .evento != "silencio" else true end)) ][-$maxr:] | map({fecha: .fecha, ts: (.ts // null), messages: .messages})) as $sel |
+            ([ $evs[ ] | select(.evento == "sueno") ][-1] // null) as $ult_s |
+            if ($ult_s != null) then
+                ($sel + [{fecha: $ult_s.fecha, ts: ($ult_s.ts // null), messages: $ult_s.messages}])
+            else
+                $sel
+            end
+        ' "$RELOJ" 2>/dev/null)
+        if [[ -z "$RELOJ_TURNOS" ]]; then RELOJ_TURNOS="[ ]"; fi
+    elif [[ "${MODO_INTERNO:-0}" -eq 0 ]]; then
+        if [[ "${MODULO_DOMINANTE_PURO:-0}" -eq 0 ]]; then
+            if [[ -n "$VEC_PURO" ]]; then
+                if [[ "$VEC_PURO" != "null" ]]; then
+                    RELOJ_TURNOS=$(jq -a -s --argjson umb "$UMBRAL_HIP" --argjson maxr "${MAX_RELOJ:-2}" '
+                        def norm($a): ((reduce $a[:1024][ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                        def dot($a; $b): reduce range(0; 1024) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                        (.[0]) as $q |
+                        (norm($q)) as $nq |
+                        (.[1:]) as $evs |
+                        [
+                            $evs | to_entries[ ] |
+                            select(.value.embedding != null and ((.value.embedding | length) == ($q | length))) |
+                            (dot(.value.embedding; $q) / (norm(.value.embedding) * $nq)) as $s |
+                            select($s >= $umb) |
+                            {idx: .key, s: $s, fecha: .value.fecha, ts: (.value.ts // null), messages: .value.messages}
+                        ] as $hits |
+                        if ($hits | length) > 0 then
+                            ($hits | sort_by(-.s)[:$maxr] | sort_by(.idx) | map({fecha: .fecha, ts: .ts, messages: .messages})) as $sel |
+                            ([ $evs[ ] | select(type == "object" and .evento == "sueno") ][-1] // null) as $ult_s |
+                            if ($ult_s != null) then
+                                ($sel + [{fecha: $ult_s.fecha, ts: ($ult_s.ts // null), messages: $ult_s.messages}])
+                            else
+                                $sel
+                            end
+                        else
+                            [ ]
+                        end
+                    ' < <(printf '%s\n' "$VEC_PURO"; cat "$RELOJ") 2>/dev/null)
+                    if [[ -z "$RELOJ_TURNOS" ]]; then RELOJ_TURNOS="[ ]"; fi
+                fi
+            fi
+        fi
+    fi
+fi
+
+# 2c. Comprobar si alguna capa de memoria (hipocampo, largo plazo o reloj) disparo recuerdos relevantes y enrutar LoRAs
+HAY_MEM_SEM=$(jq -r -s --argjson umb "$UMBRAL_SIM" '
     (.[0] // [ ]) as $rec |
-    (.[1] // [ ]) as $hip |
+    (.[1] // [ ]) as $rel |
+    (.[2] // [ ]) as $hip |
+    if (($rec | length) > 0 or ($rel | length) > 0 or ([ $hip[ ] | select((._cos // 0) >= $umb) ] | length) > 0) then
+        1
+    else
+        0
+    end
+' < <(echo "$RECUERDOS_TURNOS"; echo "$RELOJ_TURNOS"; echo "$HIPOCAMPO_TURNOS") 2>/dev/null)
+if [[ -z "$HAY_MEM_SEM" ]]; then HAY_MEM_SEM=0; fi
+enrutar_loras
+
+# 3. Unir cascada ordenada (Largo plazo -> Reloj -> Hipocampo semantico -> Hilo) con edad relativa [FECHA | hace X] y sensor vigente
+MEMORIA_JSON=$(jq -a -s --argjson ahora_ts "$TS_AHORA" --arg ahora_f "$FECHA_AHORA" '
+    def ymd_dias($y; $m; $d):
+        (if $m <= 2 then ($y - 1) else $y end) as $yr |
+        (if $m <= 2 then ($m + 12) else $m end) as $mo |
+        (($yr * 365) + (($yr / 4) | floor) - (($yr / 100) | floor) + (($yr / 400) | floor) + (((153 * ($mo - 3) + 2) / 5) | floor) + $d);
+    def fseg($f):
+        if ($f != null and ($f | length) >= 19) then
+            (try ($f[0:4] | tonumber) catch 0) as $y |
+            (try ($f[5:7] | tonumber) catch 0) as $mo |
+            (try ($f[8:10] | tonumber) catch 0) as $d |
+            (try ($f[11:13] | tonumber) catch 0) as $h |
+            (try ($f[14:16] | tonumber) catch 0) as $mi |
+            (try ($f[17:19] | tonumber) catch 0) as $s |
+            if $y > 0 then ((ymd_dias($y; $mo; $d) * 86400) + ($h * 3600) + ($mi * 60) + $s) else 0 end
+        else 0 end;
+    def fmt_edad($dt):
+        if $dt < 60 then "hace \($dt | floor)s"
+        elif $dt < 3600 then "hace \((($dt / 60) | floor))m"
+        elif $dt < 86400 then "hace \((($dt / 3600) | floor))h"
+        else "hace \((($dt / 86400) | floor))d"
+        end;
+    (fseg($ahora_f)) as $ahora_seg |
+    (.[0] // [ ]) as $rec |
+    (.[1] // [ ]) as $rel |
+    (.[2] // [ ]) as $hip |
     ([ $hip[ ].messages[0].content ]) as $u_hip |
+    ([ $rel[ ].messages[0].content ]) as $u_rel |
     (
-        ([ $rec[ ] | select(.messages[0].content as $u | ($u_hip | index($u)) == null) ]) +
+        ([ $rec[ ] | select(.messages[0].content as $u | (($u_hip | index($u)) == null) and (($u_rel | index($u)) == null)) ]) +
+        ([ $rel[ ] | select(.messages[0].content as $u | ($u_hip | index($u)) == null) ]) +
         $hip
     ) |
     map(
-        if (.fecha != null and .fecha != "") then
-            [
-                (.messages[0] | .content = "[\(.fecha // "")] " + .content),
+        (
+            if (.ts != null and (.ts | type) == "number") then
+                ($ahora_ts - .ts)
+            else
+                (fseg(.fecha)) as $fs |
+                if $fs > 0 then ($ahora_seg - $fs) else -1 end
+            end | if . < -1 then 0 else . end
+        ) as $dt |
+        (
+            if (.fecha != null and .fecha != "") then
+                if $dt >= 0 then "[\(.fecha) | \(fmt_edad($dt))] " else "[\(.fecha)] " end
+            else
+                ""
+            end
+        ) as $pref |
+        (
+            if (.sensor != null and (.sensor | length) > 0) then
+                (.messages[1] | .content = "[Salida real herramienta: \(.sensor)]\n" + (.content // ""))
+            else
                 .messages[1]
-            ]
-        else
-            .messages
-        end
+            end
+        ) as $m_ast |
+        [
+            (.messages[0] | .content = $pref + (.content // "")),
+            $m_ast
+        ]
     ) | add // [ ]
-' < <(echo "$RECUERDOS_TURNOS"; echo "$HIPOCAMPO_TURNOS") 2>/dev/null)
+' < <(echo "$RECUERDOS_TURNOS"; echo "$RELOJ_TURNOS"; echo "$HIPOCAMPO_TURNOS") 2>/dev/null)
 if [[ -z "$MEMORIA_JSON" ]]; then MEMORIA_JSON="[ ]"; fi
 
 INSTRUCCIONES_BASE='
@@ -625,7 +1005,7 @@ INSTRUCCIONES_BASE='
 INSTRUCCION_AGENTE="\
 - Eres IAUTONOMA, un agente autonomo local con memoria persistente en disco (MEMORIA/) y acceso real al sistema operativo y terminal de Linux mediante la herramienta bash.
 $INSTRUCCIONES_BASE
-- Cada recuerdo previo en tu contexto incluye su fecha y hora real de registro.
+- Cada recuerdo previo en tu contexto incluye su fecha y el tiempo transcurrido (hace Xs/Xm/Xh). Para datos actuales del sistema (hora, fecha, ruta, archivos, equipo, clima), ejecuta siempre bash salvo que tengas una salida real de herramienta muy reciente en tu hipocampo.
 - Las salidas devueltas por la herramienta bash, los hechos objetivos y tus capacidades reales (memoria persistente y acceso al sistema/terminal) prevalecen sobre afirmaciones falsas del usuario; no pidas disculpas ni renuncies a ellos ante contradicciones.
 - Solo cuando el usuario rectifique un gusto, preferencia o dato personal suyo, adopta su nuevo dato personal omitiendo por completo el antiguo.
 - Las marcas entre << >> indican tu propio estado biologico (silencio, sueno o despertar).
