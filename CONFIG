@@ -117,7 +117,6 @@ LOG_EQUILIBRIO="$DIR_REGISTROS_LOGS/equilibrio.log"
 LOCK_MEMORIA="$DIR_REGISTROS_ESTADO/consolidando.lock"
 PID_OLVIDO="$DIR_REGISTROS_ESTADO/olvido.pid"
 TS_OLVIDO="$DIR_REGISTROS_ESTADO/olvido.ts"
-PARADA_OLVIDO="$DIR_MEMORIA/OLVIDO_PARADA"
 
 # Aburrimiento (despertar automatico y tiempo despierto en segundos)
 TIEMPO_DESPIERTO="5*60"

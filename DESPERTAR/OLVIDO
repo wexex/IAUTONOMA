@@ -4,10 +4,6 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)/../CONFIG"
 
 mkdir -p "$DIR_REGISTROS" "$DIR_REGISTROS_OLVIDO" "$DIR_REGISTROS_ESTADO"
 
-if [[ -e "$PARADA_OLVIDO" ]]; then
-    exit 0
-fi
-
 # Control de instancia unica
 if [[ -s "$PID_OLVIDO" ]]; then
     PID_PREV=$(cat "$PID_OLVIDO" 2>/dev/null)
@@ -57,10 +53,6 @@ if [[ -s "$TS_OLVIDO" ]]; then
 fi
 
 while true; do
-    if [[ -e "$PARADA_OLVIDO" ]]; then
-        exit 0
-    fi
-
     FECHA_NOW=$(date "+%Y-%m-%d %H:%M:%S")
     T_AHORA=$(date +%s)
     DT_SEG=$((T_AHORA - T_ULTIMO))

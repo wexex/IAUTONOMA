@@ -1,0 +1,56 @@
+#!/bin/bash
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)/CONFIG"
+
+# 1. Esperar cierre atomico de cualquier consolidacion activa para no corromper memoria
+esperar_lock 50 0.2
+
+# 2. Pausar sueno si esta activo (guardando checkpoint limpio)
+if [[ -s "$PID_DORMIR" ]]; then
+    DPID_P=$(cat "$PID_DORMIR" 2>/dev/null)
+    if [[ -n "$DPID_P" ]]; then
+        if kill -0 "$DPID_P" 2>/dev/null; then
+            date +%s > "$SENAL_DESPERTAR"
+            ESP_P=0
+            while [[ $ESP_P -lt 50 ]]; do
+                if ! kill -0 "$DPID_P" 2>/dev/null; then break; fi
+                sleep 0.2
+                ESP_P=$((ESP_P + 1))
+            done
+            if kill -0 "$DPID_P" 2>/dev/null; then
+                kill -TERM "$DPID_P" 2>/dev/null
+            fi
+        fi
+    fi
+    rm -f "$PID_DORMIR" "$SENAL_DESPERTAR" 2>/dev/null
+fi
+
+# 3. Detener monitores en segundo plano (ABURRIMIENTO y OLVIDO)
+for pf_p in "$PID_ABURRIMIENTO" "$PID_OLVIDO"; do
+    if [[ -s "$pf_p" ]]; then
+        MPID_P=$(cat "$pf_p" 2>/dev/null)
+        if [[ -n "$MPID_P" ]]; then
+            if kill -0 "$MPID_P" 2>/dev/null; then
+                kill -TERM "$MPID_P" 2>/dev/null
+            fi
+        fi
+        rm -f "$pf_p" 2>/dev/null
+    fi
+done
+
+# 4. Apagar servidores de inferencia (LENGUAJE, MEMORIA, AMIGDALA)
+dormir_puerto "$PUERTO"
+dormir_puerto "$PUERTO_MEMORIA"
+dormir_puerto "$PUERTO_AMIGDALA"
+
+# 5. Limpiar lock si quedo huerfano
+if [[ -s "$LOCK_MEMORIA" ]]; then
+    LPID_P=$(cat "$LOCK_MEMORIA" 2>/dev/null)
+    if [[ -n "$LPID_P" ]]; then
+        if ! kill -0 "$LPID_P" 2>/dev/null; then
+            rm -f "$LOCK_MEMORIA" 2>/dev/null
+        fi
+    fi
+fi
+
+echo "IAUTONOMA apagada con seguridad (se encendera de nuevo al siguiente mensaje en ENTRADA/CHAT)."

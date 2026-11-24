@@ -142,7 +142,7 @@ Cada recuerdo se almacena como un objeto JSON con marca temporal, mensajes `user
 
 ### Mecánicas de consolidación, refuerzo y decaimiento
 
-* **Decaimiento exponencial continuo modulado por relevancia (`DESPERTAR/OLVIDO`):** se ejecuta automáticamente en segundo plano vigilado y auto-recuperado por `ENTRADA`, `ABURRIMIENTO` y `DORMIR` (y solo se detiene si existe `MEMORIA/OLVIDO_PARADA`). En ciclos configurables (`INTERVALO_OLVIDO="15"` segundos) procesa todas las capas en una sola pasada `jq` + `awk` aplicando el factor exacto de atenuación ($d^{\Delta t}$, persistiendo el último tick en `REGISTROS/olvido.ts`) modulado por la `valencia` de la Amígdala: recuerdos positivos (`valencia > 0`) decaen un `40%` más lento ($d^{0.6}$), neutros (`0`) siguen la curva base ($d$) y negativos (`valencia < 0`) decaen al doble de velocidad ($d^2$). Respeta `LOCK_MEMORIA`, elimina entradas `< 0.52`, purga particiones vacías y mantiene actualizados los 4 registros en `REGISTROS/OLVIDO/` (`hipocampo.log`, `episodica.log`, `persistente.log` y `olvidado.log`). Por su parte, las preparaciones y entrenamientos LoRA quedan trazados en `REGISTROS/lora_entrenar.log` y el reparto de hardware en `REGISTROS/equilibrio.log`.
+* **Decaimiento exponencial continuo modulado por relevancia (`DESPERTAR/OLVIDO`):** se ejecuta automáticamente en segundo plano vigilado y auto-recuperado por `ENTRADA`, `ABURRIMIENTO` y `DORMIR` (y se detiene junto con todo el sistema mediante `DESPERTAR/APAGAR`). En ciclos configurables (`INTERVALO_OLVIDO="15"` segundos) procesa todas las capas en una sola pasada `jq` + `awk` aplicando el factor exacto de atenuación ($d^{\Delta t}$, persistiendo el último tick en `REGISTROS/ESTADO/olvido.ts`) modulado por la `valencia` de la Amígdala: recuerdos positivos (`valencia > 0`) decaen un `40%` más lento ($d^{0.6}$), neutros (`0`) siguen la curva base ($d$) y negativos (`valencia < 0`) decaen al doble de velocidad ($d^2$). Respeta `LOCK_MEMORIA`, elimina entradas `< 0.52`, purga particiones vacías y mantiene actualizados los 4 registros en `REGISTROS/OLVIDO/` (`hipocampo.log`, `episodica.log`, `persistente.log` y `olvidado.log`). Por su parte, las preparaciones y entrenamientos LoRA quedan trazados en `REGISTROS/LOGS/lora_entrenar.log` y el reparto de hardware en `REGISTROS/LOGS/equilibrio.log`.
 * **Reconsolidación y potenciación sináptica (LTP, `sim >= 0.80`):** al guardar un turno en el hipocampo o en una partición temática, si existe un recuerdo previo con similitud coseno `>= UMBRAL_REFUERZO` (`0.80`), se fusiona actualizando contenido, fecha, **dirección vectorial al nuevo turno** y preservando `.sensor` si el nuevo turno no genera una salida nueva, y se refuerza su norma multiplicándola por `FACTOR_REFUERZO` (`1.10`, acotada a `1.0`). El refuerzo de norma se aplica igualmente al recuerdo ganador durante la recuperación en `AGENTE`.
 * **Depresión sináptica por colisión y divergencia (LTD, `0.52 <= sim_T < 0.80`) y habituación anti-loro:** cada turno se vectoriza en una única petición por lote obteniendo tres vectores: turno completo (`embedding`), entrada (`emb_u`) y respuesta (`emb_a`). Cuando el nuevo turno cae en la franja `0.52 <= sim_T < 0.80` con divergencia asimétrica entre entrada y respuesta (rectificación o cambio de atributo), o cuando el modelo repite la misma respuesta ante una entrada diferente (`sim_A >= 0.90` con `sim_U < 0.80`, habituación), el sistema atenúa el recuerdo previo en conflicto a `DECAIMIENTO_CASTIGO` (`1 hora` de vida residual antes de `0.52`). Los recuerdos deprimidos por LTD quedan por debajo del **potencial de disparo** en `AGENTE` (no se inyectan al prompt ni se refuerzan mientras `OLVIDO` completa su poda). Si por el contrario se trata de un subtema complementario del mismo ámbito, ambos recuerdos coexisten sin atenuarse.
 * **Destilación de hechos atómicos (`atomico: 1`):** durante `--consolidar` en `ENTRADA`, los turnos declarativos (`herramienta: 0` y longitud `>= 15` caracteres) se sintetizan en segundo plano en una sola frase objetiva en tercera persona sin saludos ni emojis antes de escribirse en `Episódica`, re-vectorizando el hecho limpio. Si el turno es solo un saludo o charla sin hechos concretos (`NINGUNO`), se conserva en `Hipocampo` para el hilo inmediato pero no contamina `Episódica`.
@@ -244,7 +244,8 @@ IAUTONOMA/
 │   ├── AMIGDALA            # Lanzador llama-server guardrail Qwen3Guard-Gen-0.6B (:8083, auto GPU/RAM)
 │   ├── ABURRIMIENTO        # Gestor automático del ciclo de silencio, suspensión y entrada en sueño
 │   ├── DORMIR              # Consolidación en sueño (Ligero -> Profundo equilibrado -> REM)
-│   └── OLVIDO              # Demonio silencioso de decaimiento exponencial modulado por relevancia (4 logs)
+│   ├── OLVIDO              # Demonio silencioso de decaimiento exponencial modulado por relevancia (4 logs)
+│   └── APAGAR              # Apagado seguro de todo el ciclo (espera lock, pausa sueño y detiene servicios)
 ├── HERRAMIENTAS/
 │   └── bash                # Enrutador vectorial de módulos (--spec), aduana externa y ejecutor controlado
 ├── LORA/
@@ -292,8 +293,8 @@ Asegúrate de disponer de los modelos GGUF en `../MODELO/` o actualiza las varia
 # 2. Ejecutar una consulta puntual desde terminal o integrarla en otros scripts
 ./ENTRADA "Resume el estado actual de la maquina"
 
-# 3. Inspeccionar los registros en tiempo real del demonio OLVIDO (se auto-arranca en segundo plano; para detenerlo: touch MEMORIA/OLVIDO_PARADA)
-ls REGISTROS/OLVIDO/
+# 3. Apagar con seguridad todo el ciclo (espera consolidación, pausa sueño y detiene servicios; se reactiva al hablar de nuevo)
+./DESPERTAR/APAGAR
 
 # 4. Entrenar o actualizar un adaptador LoRA local en CPU desde LORA/DATASETS/<nombre>.jsonl
 ./LORA/ENTRENAR criterio_iautonoma 2 4 16
