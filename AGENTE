@@ -1200,7 +1200,7 @@ if [[ "${MODO_INTERNO:-0}" -eq 1 ]]; then
         ),
         temperature: $temp,
         repeat_penalty: $rpen,
-        stop: ["<tool_call>", "</tool_call>", "</parameter>", "<function=", "<response>"]
+        stop: ["<tool_call>", "</tool_call>", "</parameter>", "<function=", "<response>", "</think>", "<think>", "#bash>"]
     }' < <(echo "$MEMORIA_JSON"))
 
     RESP_INTERNA=$(curl -s "$URL" -H "Content-Type: application/json" -d "$PAYLOAD_INTERNO")
@@ -1233,7 +1233,7 @@ else
             repeat_penalty: $rpen,
             frequency_penalty: $fpen,
             max_tokens: 512,
-            stop: ["</parameter></parameter>", "<response>"]
+            stop: ["</parameter></parameter>", "<response>", "</think>", "<think>", "#bash>"]
         }' < <(echo "$MEMORIA_JSON"))
 
         # Petición a llama-server
@@ -1379,7 +1379,7 @@ $INSTRUCCION_AGENTE
         temperature: $temp,
         repeat_penalty: $rpen,
         max_tokens: 512,
-        stop: ["<tool_call>", "</tool_call>", "</parameter>", "<function=", "<response>"]
+        stop: ["<tool_call>", "</tool_call>", "</parameter>", "<function=", "<response>", "</think>", "<think>", "#bash>"]
     }' < <(echo "$MEMORIA_JSON"))
 
     RESPUESTA_FINAL=$(curl -s "$URL" -H "Content-Type: application/json" -d "$PAYLOAD_FINAL")
@@ -1429,7 +1429,7 @@ if [[ $NECESITA_CRITICO -eq 1 ]]; then
                 temperature: $temp,
                 repeat_penalty: $rpen,
                 max_tokens: 512,
-                stop: ["<tool_call>", "</tool_call>", "</parameter>", "<function=", "<response>"]
+                stop: ["<tool_call>", "</tool_call>", "</parameter>", "<function=", "<response>", "</think>", "<think>", "#bash>"]
             }' < <(echo "$MEMORIA_JSON"))
             RESP_REF=$(curl -s "$URL" -H "Content-Type: application/json" -d "$PAYLOAD_REF")
             if [[ -n "$RESP_REF" ]]; then
