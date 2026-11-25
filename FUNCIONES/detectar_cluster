@@ -1,0 +1,52 @@
+#!/bin/bash
+
+# Detecta automaticamente si hay nodos RPC activos en ../CLUSTER/nodos.conf
+# Rellena el array ARGS_CLUSTER=(--rpc ... --tensor-split ...) o lo deja vacio si el cluster esta apagado
+detectar_cluster() {
+    ARGS_CLUSTER=( )
+    if [[ "${USAR_CLUSTER:-auto}" == "no" ]]; then
+        :
+    elif [[ -s "${DIR_CLUSTER}/nodos.conf" ]]; then
+        CL_CADENA=""
+        CL_ACT=0
+        CL_PLOC=25000
+        if command -v nvidia-smi >/dev/null 2>/dev/null; then
+            CL_NV=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null)
+            CL_NV="${CL_NV// /}"
+            CL_NV="${CL_NV//$'\r'/}"
+            if [[ "$CL_NV" =~ ^[0-9]+$ ]]; then
+                if [[ $CL_NV -gt 0 ]]; then CL_PLOC=$((CL_NV * 10)); fi
+            fi
+        fi
+        CL_SPLIT="$CL_PLOC"
+        CL_KEY="${DIR_CLUSTER}/.clave_cluster"
+
+        while IFS=';' read -r cl_nom cl_dest cl_puerto; do
+            if [[ -n "$cl_nom" ]]; then
+                cl_ip="${cl_dest#*@}"
+                if timeout 1 bash -c "exec 3<>/dev/tcp/${cl_ip}/${cl_puerto}" 2>/dev/null; then
+                    CL_PN=500
+                    if [[ -s "$CL_KEY" ]]; then
+                        CL_RP=$(ssh -i "$CL_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=3 "$cl_dest" 'bash -c '\''VF=0; if command -v nvidia-smi >/dev/null 2>/dev/null; then VF=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null); VF=${VF// /}; fi; if [[ "$VF" =~ ^[0-9]+$ ]]; then if [[ $VF -gt 0 ]]; then echo $((VF * 10)); exit 0; fi; fi; MA=0; while read -r k v _; do if [[ "$k" == "MemAvailable:" ]]; then MA=$v; fi; done < /proc/meminfo; echo $((MA / 1024))'\''' 2>/dev/null)
+                        CL_RP="${CL_RP// /}"
+                        CL_RP="${CL_RP//$'\r'/}"
+                        if [[ "$CL_RP" =~ ^[0-9]+$ ]]; then
+                            if [[ $CL_RP -gt 0 ]]; then CL_PN="$CL_RP"; fi
+                        fi
+                    fi
+                    CL_SPLIT="${CL_SPLIT},${CL_PN}"
+                    if [[ -n "$CL_CADENA" ]]; then
+                        CL_CADENA="${CL_CADENA},${cl_ip}:${cl_puerto}"
+                    else
+                        CL_CADENA="${cl_ip}:${cl_puerto}"
+                    fi
+                    CL_ACT=$((CL_ACT + 1))
+                fi
+            fi
+        done < "${DIR_CLUSTER}/nodos.conf"
+
+        if [[ $CL_ACT -gt 0 ]]; then
+            ARGS_CLUSTER=(--rpc "$CL_CADENA" --tensor-split "$CL_SPLIT")
+        fi
+    fi
+}

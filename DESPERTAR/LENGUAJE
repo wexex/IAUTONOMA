@@ -38,9 +38,12 @@ fi
 if [[ -z "$NGL_LEN" ]]; then NGL_LEN="99"; fi
 if [[ -z "$HILOS_LEN" ]]; then HILOS_LEN="2"; fi
 
+detectar_cluster
+
 llama-server \
 -m "$MODELO" \
 "${ARGS_LORA[@]}" \
+"${ARGS_CLUSTER[@]}" \
 --host "$HOST" \
 --port "$PUERTO" \
 -c 4096 -n \

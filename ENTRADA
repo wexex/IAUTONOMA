@@ -1129,7 +1129,7 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                     (if $turno.emb_u != null then norm($turno.emb_u) else 1 end) as $nu |
                     [
                         $idx[ ] |
-                        select(((.nombre // "") | startswith("sueno_")) and .embedding != null) |
+                        select((((.nombre // "") | startswith("persistente_")) or ((.nombre // "") | startswith("procedimental_"))) and .embedding != null) |
                         (norm(.embedding)) as $ne |
                         (if ($turno.embedding != null and (.embedding | length) == ($turno.embedding | length)) then (dot(.embedding; $turno.embedding) / ($ne * $nt)) else 0 end) as $st |
                         (if ($turno.emb_u != null and (.embedding | length) == ($turno.emb_u | length)) then (dot(.embedding; $turno.emb_u) / ($ne * $nu)) else 0 end) as $su |
@@ -1156,7 +1156,7 @@ if [[ -n "$RESPUESTA_UNA_LINEA" ]]; then
                         fi
                         if [[ -s "$DS_SRC" ]]; then
                             CLASE_CAND="declarativo"
-                            if [[ "$nom_cand" == sueno_herr_* ]]; then
+                            if [[ "$nom_cand" == procedimental_* ]]; then
                                 CLASE_CAND="procedimental"
                             fi
                             PAY_CONF=$(jq -a -c -s '

@@ -414,7 +414,7 @@ enrutar_loras() {
                     prev: (.scale // 0.0),
                     es_base: ($nom == $base),
                     es_cur: ($nom | startswith("curiosidad_")),
-                    es_herr: ($nom | startswith("sueno_herr_")),
+                    es_herr: (($nom | startswith("herramientas_modulos_")) or ($nom | startswith("procedimental_"))),
                     en_rect: (($rect | index($nom)) != null),
                     sim: (if ($q != null and $ev != null) then (dot($ev; $q) / (norm($ev) * $nq)) else 0 end)
                 }
@@ -1176,7 +1176,7 @@ elif [[ "${REP_USUARIO:-0}" -eq 1 ]]; then
     INSTRUCCION_AGENTE="${INSTRUCCION_AGENTE}- [AMIGDALA CASTIGO MENOR: REPETICION] El usuario repitio su peticion porque el turno anterior no resolvio lo pedido. Prohibido repetir el texto anterior: ejecuta el modulo real en bash o responde de otra forma.
 "
 elif [[ "${FRUST_PREV:-0}" -ge 1 ]]; then
-    TEMP_ACT="0.0"
+    TEMP_ACT="0.15"
     INSTRUCCION_AGENTE="${INSTRUCCION_AGENTE}- [AMIGDALA CAUTELA] El turno anterior genero error o frustracion en el usuario; responde con maxima precision verificando datos reales y ve directo al grano.
 "
 fi
@@ -1200,7 +1200,7 @@ if [[ "${MODO_INTERNO:-0}" -eq 1 ]]; then
         ),
         temperature: $temp,
         repeat_penalty: $rpen,
-        stop: ["<tool_call>", "</tool_call>", "</parameter>", "<function=", "<response>", "</think>", "<think>", "#bash>"]
+        stop: ["<tool_call>", "</tool_call>", "</parameter>", "<function=", "<response>", "</think>", "<think>", "#bash"]
     }' < <(echo "$MEMORIA_JSON"))
 
     RESP_INTERNA=$(curl -s "$URL" -H "Content-Type: application/json" -d "$PAYLOAD_INTERNO")
@@ -1233,7 +1233,7 @@ else
             repeat_penalty: $rpen,
             frequency_penalty: $fpen,
             max_tokens: 512,
-            stop: ["</parameter></parameter>", "<response>", "</think>", "<think>", "#bash>"]
+            stop: ["</parameter></parameter>", "<response>", "</think>", "<think>", "#bash"]
         }' < <(echo "$MEMORIA_JSON"))
 
         # Petición a llama-server
@@ -1379,7 +1379,7 @@ $INSTRUCCION_AGENTE
         temperature: $temp,
         repeat_penalty: $rpen,
         max_tokens: 512,
-        stop: ["<tool_call>", "</tool_call>", "</parameter>", "<function=", "<response>", "</think>", "<think>", "#bash>"]
+        stop: ["<tool_call>", "</tool_call>", "</parameter>", "<function=", "<response>", "</think>", "<think>", "#bash"]
     }' < <(echo "$MEMORIA_JSON"))
 
     RESPUESTA_FINAL=$(curl -s "$URL" -H "Content-Type: application/json" -d "$PAYLOAD_FINAL")
@@ -1429,7 +1429,7 @@ if [[ $NECESITA_CRITICO -eq 1 ]]; then
                 temperature: $temp,
                 repeat_penalty: $rpen,
                 max_tokens: 512,
-                stop: ["<tool_call>", "</tool_call>", "</parameter>", "<function=", "<response>", "</think>", "<think>", "#bash>"]
+                stop: ["<tool_call>", "</tool_call>", "</parameter>", "<function=", "<response>", "</think>", "<think>", "#bash"]
             }' < <(echo "$MEMORIA_JSON"))
             RESP_REF=$(curl -s "$URL" -H "Content-Type: application/json" -d "$PAYLOAD_REF")
             if [[ -n "$RESP_REF" ]]; then

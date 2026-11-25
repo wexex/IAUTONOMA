@@ -349,7 +349,96 @@ fase_ligero() {
 
     TOTAL_T="${#LISTA_CLAVES[@]}"
     if [[ $TOTAL_T -eq 0 ]]; then
-        registrar_sueno "[N1/N2 LIGERO] Sin particiones persistentes ni procedimentales pendientes (minimo: $MIN_RECUERDOS_SUENO recuerdos)."
+        # Prioridad 2: Sueno de estudio evolutivo dinamico (todas las carpetas LORA/DATASETS/*/bloque_*.jsonl en round-robin)
+        EST_NOMS=( )
+        EST_BLQS=( )
+        EST_NUMS=( )
+        for d_est in "$DIR_LORA_DATASETS"/*/; do
+            if [[ -d "$d_est" ]]; then
+                NOM_D="$(basename "$d_est")"
+                PROG_EST="$DIR_SUENO/estudio_${NOM_D}.progreso"
+                SIG_B=""
+                NUM_B=0
+                for bf in "$d_est"bloque_*.jsonl; do
+                    if [[ -s "$bf" ]]; then
+                        NUM_B=$((NUM_B + 1))
+                        BNOM="$(basename "$bf")"
+                        YA_HECHO=0
+                        if [[ -s "$PROG_EST" ]]; then
+                            if grep -Fxq "$BNOM" "$PROG_EST" 2>/dev/null; then
+                                YA_HECHO=1
+                            fi
+                        fi
+                        if [[ $YA_HECHO -eq 0 ]]; then
+                            SIG_B="$bf"
+                            break
+                        fi
+                    fi
+                done
+                if [[ -n "$SIG_B" ]]; then
+                    EST_NOMS+=("$NOM_D")
+                    EST_BLQS+=("$SIG_B")
+                    EST_NUMS+=("$NUM_B")
+                fi
+            fi
+        done
+
+        TOT_EST="${#EST_NOMS[@]}"
+        if [[ $TOT_EST -gt 0 ]]; then
+            IDX_EST=0
+            ULT_EST=""
+            if [[ -s "$DIR_SUENO/ultimo_estudio" ]]; then
+                ULT_EST=$(cat "$DIR_SUENO/ultimo_estudio" 2>/dev/null)
+            fi
+            if [[ -n "$ULT_EST" ]]; then
+                if [[ $TOT_EST -gt 1 ]]; then
+                    for (( i_e=0; i_e<TOT_EST; i_e++ )); do
+                        if [[ "${EST_NOMS[$i_e]}" == "$ULT_EST" ]]; then
+                            IDX_EST=$(( (i_e + 1) % TOT_EST ))
+                            break
+                        fi
+                    done
+                fi
+            fi
+
+            EST_OBJ="${EST_NOMS[$IDX_EST]}"
+            SIG_BLOQUE="${EST_BLQS[$IDX_EST]}"
+            NUM_BLOQUE="${EST_NUMS[$IDX_EST]}"
+            TAREA_ELEGIDA="estudio_${EST_OBJ}"
+            PART_ELEGIDA="$(basename "$SIG_BLOQUE")"
+            DIR_TAREA="$DIR_SUENO/$TAREA_ELEGIDA"
+            mkdir -p "$DIR_TAREA"
+            cp -f "$SIG_BLOQUE" "$DIR_TAREA/dataset.jsonl"
+            rm -f "$DIR_TAREA/cache.pt" 2>/dev/null
+            NUM_EJ=$(( $(wc -l < "$DIR_TAREA/dataset.jsonl") ))
+            jq -a -n \
+                --arg nom "$TAREA_ELEGIDA" \
+                --arg dest "$EST_OBJ" \
+                --arg part "$PART_ELEGIDA" \
+                --argjson ep0 "$NUM_BLOQUE" \
+                --argjson lr "${LR_ESTUDIO:-0.00025}" \
+                --argjson nej "${NUM_EJ:-0}" '{
+                nombre: $nom,
+                destino: $dest,
+                particion: $part,
+                clase: "estudio",
+                es_fusion: 0,
+                fase: "profundo",
+                ciclo: 0,
+                epocas_obj: $ep0,
+                mejor_epocas: 0,
+                lr: $lr,
+                num_ejemplos: $nej,
+                mejor_errores: 9999,
+                mejor_sim: 0.0,
+                reset_lr: 1
+            }' > "$DIR_TAREA/estado.json"
+            printf '%s\n' "$EST_OBJ" > "$DIR_SUENO/ultimo_estudio"
+            registrar_sueno "[N1/N2 ESTUDIO] Preparado bloque $PART_ELEGIDA ($NUM_EJ ejemplos, paso evolutivo #$NUM_BLOQUE) para $EST_OBJ ($TOT_EST carpetas activas)."
+            registrar_historial_sueno "Aprovecho el sueno para estudiar $EST_OBJ ($PART_ELEGIDA, $NUM_EJ ejemplos)."
+        else
+            registrar_sueno "[N1/N2 LIGERO] Sin memoria pendiente ni bloques de estudio pendientes."
+        fi
     else
         # Secuenciacion round-robin para rotar entre diferentes entrenamientos
         IDX_SEL=0
@@ -381,9 +470,9 @@ fase_ligero() {
             registrar_sueno "[N1/N2 LIGERO] Reanudando $TAREA_ELEGIDA (clase=$CLASE_SEL, fase=$FASE_PRE, ciclo=$CICLO_PRE)."
             registrar_historial_sueno "Reanudo el sueno $TAREA_ELEGIDA ($CLASE_SEL) desde la fase $FASE_PRE (ciclo $CICLO_PRE)."
         else
-            PREF_NOM="sueno_"
+            PREF_NOM="persistente_"
             if [[ "$CLASE_SEL" == "procedimental" ]]; then
-                PREF_NOM="sueno_herr_"
+                PREF_NOM="procedimental_"
             fi
 
             # Calcular centroide unitario real de los recuerdos validos de la particion
@@ -442,56 +531,51 @@ fase_ligero() {
             fi
             if [[ -z "$CENT_PART" ]]; then CENT_PART="null"; fi
 
-            # Buscar LoRA existente de la misma clase vectorial con < 50% de MAX_EJEMPLOS_LORA para fusionar
+            # Memoria persistente crea siempre una particion nueva persistente_N sin mezclar ni sobrescribir;
+            # solo procedimental (procedimental_N) puede fusionar si esta por debajo del 50% de MAX_EJEMPLOS_LORA
             LORA_FUSION=""
             LINEAS_FUSION=0
             EMB_FUSION="null"
-            if [[ "$CENT_PART" != "null" ]]; then
-                if [[ -s "$INDICE_LORA_DATASETS" ]]; then
-                    CAND_FUSION=$(jq -a -c -s --arg clase "$CLASE_SEL" --argjson umb "$UMBRAL_SIM" --argjson mitad "$MITAD_LORA" '
-                        def norm($v): ((reduce $v[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
-                        def dot($a; $b): reduce range(0; ($a | length)) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
-                        (.[0:-1]) as $idx |
-                        (.[-1]) as $q |
-                        (norm($q)) as $nq |
-                        [
-                            $idx[ ] |
-                            ((.nombre // "") | startswith("sueno_herr_")) as $es_herr |
-                            ((.nombre // "") | startswith("sueno_")) as $es_sueno |
-                            select(
-                                (
-                                    if $clase == "procedimental" then
-                                        $es_herr
-                                    else
-                                        ($es_sueno and ($es_herr | not))
-                                    end
-                                ) and
-                                ((.lineas // 0) > 0) and
-                                ((.lineas // 0) < $mitad) and
-                                .embedding != null and
-                                ((.embedding | length) == ($q | length))
-                            ) |
-                            (norm(.embedding)) as $ne |
-                            . + {_sim: (dot(.embedding; $q) / ($ne * $nq))} |
-                            select(._sim >= $umb)
-                        ] | sort_by(-._sim) | .[0] // empty
-                    ' < <(cat "$INDICE_LORA_DATASETS"; printf '%s\n' "$CENT_PART") 2>/dev/null)
+            if [[ "$CLASE_SEL" == "procedimental" ]]; then
+                if [[ "$CENT_PART" != "null" ]]; then
+                    if [[ -s "$INDICE_LORA_DATASETS" ]]; then
+                        CAND_FUSION=$(jq -a -c -s --argjson umb "$UMBRAL_SIM" --argjson mitad "$MITAD_LORA" '
+                            def norm($v): ((reduce $v[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                            def dot($a; $b): reduce range(0; ($a | length)) as $i (0; . + (($a[$i] // 0) * ($b[$i] // 0)));
+                            (.[0:-1]) as $idx |
+                            (.[-1]) as $q |
+                            (norm($q)) as $nq |
+                            [
+                                $idx[ ] |
+                                select(
+                                    ((.nombre // "") | startswith("procedimental_")) and
+                                    ((.lineas // 0) > 0) and
+                                    ((.lineas // 0) < $mitad) and
+                                    .embedding != null and
+                                    ((.embedding | length) == ($q | length))
+                                ) |
+                                (norm(.embedding)) as $ne |
+                                . + {_sim: (dot(.embedding; $q) / ($ne * $nq))} |
+                                select(._sim >= $umb)
+                            ] | sort_by(-._sim) | .[0] // empty
+                        ' < <(cat "$INDICE_LORA_DATASETS"; printf '%s\n' "$CENT_PART") 2>/dev/null)
 
-                    if [[ -n "$CAND_FUSION" ]]; then
-                        NOM_F=$(jq -r '.nombre // empty' < <(printf '%s' "$CAND_FUSION") 2>/dev/null)
-                        if [[ -n "$NOM_F" ]]; then
-                            EN_RECT_F=0
-                            if [[ -s "$LORAS_RECTIFICAR" ]]; then
-                                if grep -Fxq "$NOM_F" "$LORAS_RECTIFICAR" 2>/dev/null; then
-                                    EN_RECT_F=1
+                        if [[ -n "$CAND_FUSION" ]]; then
+                            NOM_F=$(jq -r '.nombre // empty' < <(printf '%s' "$CAND_FUSION") 2>/dev/null)
+                            if [[ -n "$NOM_F" ]]; then
+                                EN_RECT_F=0
+                                if [[ -s "$LORAS_RECTIFICAR" ]]; then
+                                    if grep -Fxq "$NOM_F" "$LORAS_RECTIFICAR" 2>/dev/null; then
+                                        EN_RECT_F=1
+                                    fi
                                 fi
-                            fi
-                            if [[ $EN_RECT_F -eq 0 ]]; then
-                                if [[ ! -d "$DIR_SUENO/$NOM_F" ]]; then
-                                    if [[ -s "$DIR_LORA_DATASETS/${NOM_F}.jsonl" ]]; then
-                                        LORA_FUSION="$NOM_F"
-                                        LINEAS_FUSION=$(jq -r '.lineas // 0' < <(printf '%s' "$CAND_FUSION") 2>/dev/null)
-                                        EMB_FUSION=$(jq -a -c '.embedding // null' < <(printf '%s' "$CAND_FUSION") 2>/dev/null)
+                                if [[ $EN_RECT_F -eq 0 ]]; then
+                                    if [[ ! -d "$DIR_SUENO/$NOM_F" ]]; then
+                                        if [[ -s "$DIR_LORA_DATASETS/${NOM_F}.jsonl" ]]; then
+                                            LORA_FUSION="$NOM_F"
+                                            LINEAS_FUSION=$(jq -r '.lineas // 0' < <(printf '%s' "$CAND_FUSION") 2>/dev/null)
+                                            EMB_FUSION=$(jq -a -c '.embedding // null' < <(printf '%s' "$CAND_FUSION") 2>/dev/null)
+                                        fi
                                     fi
                                 fi
                             fi
@@ -839,34 +923,143 @@ fase_profundo() {
             fi
 
             registrar_sueno "[N3 PROFUNDO] Entrenando $NOM_T (clase=$CLASE_T, epocas_obj=$EP_OBJ, lr=$LR_ACT, capas=${CAPA_INICIO_SUENO}..23, equilibrio=$MODO_ENT, hilos=${HILOS_ENT:-auto})..."
+            registrar_historial_sueno "Empiezo a entrenar $NOM_T ($CLASE_T, meta $EP_OBJ epocas, modo $MODO_ENT con ${HILOS_ENT:-auto} hilos)."
 
-            "${CMD_PREFIX[@]}" "$PY_BIN" "$R_SCRIPT" \
-                --dataset "$R_DS" \
-                --out "$R_OUT" \
-                --base-model "$MODELO_BASE_HF" \
-                --modules-dir "$R_MODS" \
-                --checkpoint "$R_CKPT" \
-                --cache-file "$R_CACHE" \
-                --stop-file "$R_STOP" \
-                --start-layer "${CAPA_INICIO_SUENO:-18}" \
-                --rank "${RANGO_LORA_SUENO:-4}" \
-                --alpha "${ALFA_LORA_SUENO:-16}" \
-                --epochs "$EP_OBJ" \
-                --lr "$LR_ACT" \
-                --grad-accum "${GRAD_ACCUM_SUENO:-2}" \
-                --compact \
-                "${ARGS_EXTRA[@]}" >> "$LOG_SUENO" 2>> "$LOG_SUENO"
-            PROFUNDO_RC=$?
+            RC_ENT="$DIR_T/.rc_ent.$$.tmp"
+            rm -f "$RC_ENT" 2>/dev/null
+            while IFS= read -r lin_ent; do
+                printf '%s\n' "$lin_ent" >> "$LOG_SUENO"
+                if [[ "$lin_ent" == "[CACHE] Prefijo congelado completo en "* ]]; then
+                    T_CAC="${lin_ent#*en }"
+                    registrar_historial_sueno "Prepare mi memoria base de $NOM_T en $T_CAC"
+                elif [[ "$lin_ent" == "[CKPT] Reanudando desde "* ]]; then
+                    DET_CK="${lin_ent#*desde }"
+                    DET_CK="${DET_CK%% (*}"
+                    registrar_historial_sueno "Retomo el entrenamiento de $NOM_T desde $DET_CK."
+                elif [[ "$lin_ent" == "[EP "*"] paso "* ]]; then
+                    EP_STR="${lin_ent#\[EP }"
+                    EP_STR="${EP_STR%%]*}"
+                    PASO_STR="${lin_ent#*paso }"
+                    PASO_STR="${PASO_STR%% *}"
+                    LOSS_STR="${lin_ent#*loss=}"
+                    LOSS_STR="${LOSS_STR%% *}"
+                    registrar_historial_sueno "Entrenando $NOM_T: epoca $EP_STR, paso $PASO_STR (error $LOSS_STR)."
+                elif [[ "$lin_ent" == "[EP "*" FIN] "* ]]; then
+                    EP_STR="${lin_ent#\[EP }"
+                    EP_STR="${EP_STR%% FIN]*}"
+                    LM_STR="${lin_ent#*loss_media=}"
+                    LM_STR="${LM_STR%% *}"
+                    TM_STR="${lin_ent#*tiempo=}"
+                    TM_STR="${TM_STR%% *}"
+                    registrar_historial_sueno "Complete la epoca $EP_STR de $NOM_T en $TM_STR (error medio $LM_STR)."
+                fi
+            done < <(
+                "${CMD_PREFIX[@]}" "$PY_BIN" "$R_SCRIPT" \
+                    --dataset "$R_DS" \
+                    --out "$R_OUT" \
+                    --base-model "$MODELO_BASE_HF" \
+                    --modules-dir "$R_MODS" \
+                    --checkpoint "$R_CKPT" \
+                    --cache-file "$R_CACHE" \
+                    --stop-file "$R_STOP" \
+                    --start-layer "${CAPA_INICIO_SUENO:-18}" \
+                    --rank "${RANGO_LORA_SUENO:-4}" \
+                    --alpha "${ALFA_LORA_SUENO:-16}" \
+                    --epochs "$EP_OBJ" \
+                    --lr "$LR_ACT" \
+                    --grad-accum "${GRAD_ACCUM_SUENO:-2}" \
+                    --compact \
+                    "${ARGS_EXTRA[@]}" 2>> "$LOG_SUENO"
+                printf '%s\n' "$?" > "$RC_ENT"
+            )
+            PROFUNDO_RC=1
+            if [[ -s "$RC_ENT" ]]; then
+                PROFUNDO_RC=$(cat "$RC_ENT" 2>/dev/null)
+                rm -f "$RC_ENT" 2>/dev/null
+            fi
         fi
 
         if [[ $PROFUNDO_RC -eq 42 ]]; then
             registrar_sueno "[N3 PROFUNDO] Pausado en checkpoint por despertar del usuario ($NOM_T)."
             registrar_historial_sueno "Me despertaste mientras sonaba con $NOM_T; guarde el punto exacto para seguir mas tarde."
         elif [[ $PROFUNDO_RC -eq 0 ]]; then
-            EST_NUEVO=$(jq -a -c '. + {fase: "rem", reset_lr: 0}' "$EST_F" 2>/dev/null)
-            printf '%s\n' "$EST_NUEVO" > "${EST_F}.tmp"
-            mv -f "${EST_F}.tmp" "$EST_F" 2>/dev/null
-            registrar_sueno "[N3 PROFUNDO] Epoca(s) completada(s) y candidato exportado ($NOM_T). Pasando a REM."
+            if [[ "$CLASE_T" == "estudio" ]]; then
+                DEST_EST=$(jq -r '.destino // empty' "$EST_F" 2>/dev/null)
+                PART_EST=$(jq -r '.particion // empty' "$EST_F" 2>/dev/null)
+                if [[ -n "$DEST_EST" ]]; then
+                    if [[ -s "$DIR_T/candidato.gguf" ]]; then
+                        mkdir -p "$DIR_LORA_PESOS"
+                        OUT_EST="$DIR_LORA_PESOS/${DEST_EST}.gguf"
+                        if [[ -s "$OUT_EST" ]]; then
+                            if [[ ! -f "${OUT_EST}.bak" ]]; then
+                                cp -f "$OUT_EST" "${OUT_EST}.bak" 2>/dev/null
+                            fi
+                        fi
+                        cp -f "$DIR_T/candidato.gguf" "${OUT_EST}.tmp" 2>/dev/null
+                        mv -f "${OUT_EST}.tmp" "$OUT_EST" 2>/dev/null
+                        if [[ -n "$PART_EST" ]]; then
+                            printf '%s\n' "$PART_EST" >> "$DIR_SUENO/estudio_${DEST_EST}.progreso"
+                        fi
+                        # Si no es el LoRA base y aun no tiene centroide en indice.json, calcularlo con :8082 para enrutamiento semantico
+                        if [[ "$DEST_EST" != "$LORA_BASE" ]]; then
+                            TIENE_CENT=0
+                            if [[ -s "$INDICE_LORA_DATASETS" ]]; then
+                                if jq -e -s --arg n "$DEST_EST" 'any(.[ ]; .nombre == $n and .embedding != null)' "$INDICE_LORA_DATASETS" >/dev/null 2>/dev/null; then
+                                    TIENE_CENT=1
+                                fi
+                            fi
+                            if [[ $TIENE_CENT -eq 0 ]]; then
+                                if [[ -s "$DIR_T/dataset.jsonl" ]]; then
+                                    if ! curl -sf "http://${HOST}:${PUERTO_MEMORIA}/health" >/dev/null 2>/dev/null; then
+                                        true < <(setsid "$DIR/DESPERTAR/MEMORIA" </dev/null >/dev/null 2>/dev/null)
+                                        E_M=0
+                                        while [[ $E_M -lt 40 ]]; do
+                                            if curl -sf "http://${HOST}:${PUERTO_MEMORIA}/health" >/dev/null 2>/dev/null; then break; fi
+                                            sleep 0.5
+                                            E_M=$((E_M + 1))
+                                        done
+                                    fi
+                                    PAY_CENT=$(jq -a -c -s '{input: ([ .[ ] | (.messages[0].content // "") | select(length > 0) ][:12])}' "$DIR_T/dataset.jsonl" 2>/dev/null)
+                                    if [[ -n "$PAY_CENT" ]]; then
+                                        RESP_CENT=$(curl -sf "$URL_MEMORIA" -H "Content-Type: application/json" -d "$PAY_CENT" 2>/dev/null)
+                                        CENT_EST=$(jq -a -c '
+                                            def norm($v): ((reduce $v[ ] as $x (0; . + ($x * $x))) | sqrt) + 0.000001;
+                                            ([ (.data // [ ])[ ].embedding | select(type == "array" and length > 0) | (norm(.)) as $n | map(. / $n) ]) as $units |
+                                            if ($units | length) > 0 then
+                                                ($units[0] | length) as $dim |
+                                                (reduce range(0; $dim) as $i ([ ]; . + [(reduce $units[ ] as $u (0; . + ($u[$i] // 0))) / ($units | length)])) as $mean |
+                                                (norm($mean)) as $nm |
+                                                ($mean | map(((. / $nm) * 10000 | round) / 10000))
+                                            else
+                                                null
+                                            end
+                                        ' < <(printf '%s' "$RESP_CENT") 2>/dev/null)
+                                        if [[ -n "$CENT_EST" ]]; then
+                                            if [[ "$CENT_EST" != "null" ]]; then
+                                                printf '%s\n' "$CENT_EST" > "$DIR_T/centroide.json"
+                                                LIN_EST=$(( $(wc -l < "$DIR_T/dataset.jsonl") ))
+                                                actualizar_indice_lora "$DEST_EST" "$LIN_EST" "$DIR_T/centroide.json"
+                                            fi
+                                        fi
+                                    fi
+                                    dormir_puerto "$PUERTO_MEMORIA"
+                                fi
+                            fi
+                        fi
+                        rm -f "$DIR_MEM_LORA/huella" "$DIR_T/cache.pt" "$DIR_T/dataset.jsonl" 2>/dev/null
+                        EST_NUEVO=$(jq -a -c '. + {fase: "completado", reset_lr: 0}' "$EST_F" 2>/dev/null)
+                        printf '%s\n' "$EST_NUEVO" > "${EST_F}.tmp"
+                        mv -f "${EST_F}.tmp" "$EST_F" 2>/dev/null
+                        registrar_sueno "[ESTUDIO] Bloque $PART_EST consolidado en ${DEST_EST}.gguf (checkpoint evolutivo conservado)."
+                        registrar_historial_sueno "Termine de estudiar $PART_EST y mejore $DEST_EST."
+                    fi
+                fi
+            else
+                EST_NUEVO=$(jq -a -c '. + {fase: "rem", reset_lr: 0}' "$EST_F" 2>/dev/null)
+                printf '%s\n' "$EST_NUEVO" > "${EST_F}.tmp"
+                mv -f "${EST_F}.tmp" "$EST_F" 2>/dev/null
+                registrar_sueno "[N3 PROFUNDO] Epoca(s) completada(s) y candidato exportado ($NOM_T). Pasando a REM."
+            fi
         else
             registrar_sueno "[N3 PROFUNDO] Error en entrenamiento de $NOM_T (rc=$PROFUNDO_RC)."
         fi
@@ -1485,7 +1678,7 @@ while true; do
         elif [[ $PROFUNDO_RC -ne 0 ]]; then
             break
         fi
-        FASE_ACTUAL="rem"
+        FASE_ACTUAL=$(jq -r '.fase // "rem"' "$DIR_SUENO/$TAREA_ELEGIDA/estado.json" 2>/dev/null)
     fi
 
     if [[ "$FASE_ACTUAL" == "rem" ]]; then
