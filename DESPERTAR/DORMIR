@@ -349,36 +349,67 @@ fase_ligero() {
 
     TOTAL_T="${#LISTA_CLAVES[@]}"
     if [[ $TOTAL_T -eq 0 ]]; then
-        # Prioridad 2: Sueno de estudio evolutivo dinamico (todas las carpetas LORA/DATASETS/*/bloque_*.jsonl en round-robin)
+        # Prioridad 2: Sueno de estudio evolutivo en round-robin (1 bloque de cada carpeta por turno)
         EST_NOMS=( )
         EST_BLQS=( )
         EST_NUMS=( )
+        EST_TOTS=( )
         for d_est in "$DIR_LORA_DATASETS"/*/; do
             if [[ -d "$d_est" ]]; then
                 NOM_D="$(basename "$d_est")"
-                PROG_EST="$DIR_SUENO/estudio_${NOM_D}.progreso"
-                SIG_B=""
-                NUM_B=0
-                for bf in "$d_est"bloque_*.jsonl; do
-                    if [[ -s "$bf" ]]; then
-                        NUM_B=$((NUM_B + 1))
-                        BNOM="$(basename "$bf")"
-                        YA_HECHO=0
-                        if [[ -s "$PROG_EST" ]]; then
-                            if grep -Fxq "$BNOM" "$PROG_EST" 2>/dev/null; then
-                                YA_HECHO=1
+                if [[ "$NOM_D" != "$LORA_BASE" ]]; then
+                    DIR_EST_D="$DIR_SUENO/estudio_${NOM_D}"
+                    EST_D_JSON="$DIR_EST_D/estado.json"
+                    PROG_OLD="$DIR_SUENO/estudio_${NOM_D}.progreso"
+                    HECHOS_JSON="[ ]"
+                    if [[ -s "$EST_D_JSON" ]]; then
+                        H_TMP=$(jq -a -c '.completados // [ ]' "$EST_D_JSON" 2>/dev/null)
+                        if [[ -n "$H_TMP" ]]; then HECHOS_JSON="$H_TMP"; fi
+                    fi
+                    if [[ -s "$PROG_OLD" ]]; then
+                        H_MIG=$(jq -a -c -s '((.[0] // [ ]) + (.[1] // [ ])) | unique' < <(printf '%s\n' "$HECHOS_JSON"; jq -a -R -s -c 'split("\n") | map(gsub("\r$"; "") | select(length > 0))' "$PROG_OLD") 2>/dev/null)
+                        if [[ -n "$H_MIG" ]]; then HECHOS_JSON="$H_MIG"; fi
+                        if [[ -s "$EST_D_JSON" ]]; then
+                            EST_MIG=$(jq -a -c --argjson comp "$HECHOS_JSON" '. + {completados: $comp}' "$EST_D_JSON" 2>/dev/null)
+                            if [[ -n "$EST_MIG" ]]; then
+                                printf '%s\n' "$EST_MIG" > "${EST_D_JSON}.tmp"
+                                mv -f "${EST_D_JSON}.tmp" "$EST_D_JSON" 2>/dev/null
                             fi
                         fi
-                        if [[ $YA_HECHO -eq 0 ]]; then
-                            SIG_B="$bf"
-                            break
+                        rm -f "$PROG_OLD" 2>/dev/null
+                    fi
+                    HECHOS_NL=$'\n'
+                    if [[ "$HECHOS_JSON" != "[ ]" ]]; then
+                        H_LIN=$(jq -r '.[ ]' < <(printf '%s' "$HECHOS_JSON") 2>/dev/null)
+                        if [[ -n "$H_LIN" ]]; then
+                            HECHOS_NL=$'\n'"${H_LIN}"$'\n'
                         fi
                     fi
-                done
-                if [[ -n "$SIG_B" ]]; then
-                    EST_NOMS+=("$NOM_D")
-                    EST_BLQS+=("$SIG_B")
-                    EST_NUMS+=("$NUM_B")
+                    SIG_B=""
+                    NUM_B=0
+                    TOT_B=0
+                    for bf in "$d_est"bloque_*.jsonl; do
+                        if [[ -s "$bf" ]]; then
+                            TOT_B=$((TOT_B + 1))
+                            BNOM="$(basename "$bf")"
+                            YA_HECHO=0
+                            if [[ "$HECHOS_NL" == *$'\n'"$BNOM"$'\n'* ]]; then
+                                YA_HECHO=1
+                            fi
+                            if [[ $YA_HECHO -eq 0 ]]; then
+                                if [[ -z "$SIG_B" ]]; then
+                                    SIG_B="$bf"
+                                    NUM_B="$TOT_B"
+                                fi
+                            fi
+                        fi
+                    done
+                    if [[ -n "$SIG_B" ]]; then
+                        EST_NOMS+=("$NOM_D")
+                        EST_BLQS+=("$SIG_B")
+                        EST_NUMS+=("$NUM_B")
+                        EST_TOTS+=("$TOT_B")
+                    fi
                 fi
             fi
         done
@@ -387,8 +418,9 @@ fase_ligero() {
         if [[ $TOT_EST -gt 0 ]]; then
             IDX_EST=0
             ULT_EST=""
-            if [[ -s "$DIR_SUENO/ultimo_estudio" ]]; then
-                ULT_EST=$(cat "$DIR_SUENO/ultimo_estudio" 2>/dev/null)
+            if [[ -s "$DIR_SUENO/ultimo_turno" ]]; then
+                ULT_EST=$(cat "$DIR_SUENO/ultimo_turno" 2>/dev/null)
+                ULT_EST="${ULT_EST#estudio_}"
             fi
             if [[ -n "$ULT_EST" ]]; then
                 if [[ $TOT_EST -gt 1 ]]; then
@@ -404,10 +436,16 @@ fase_ligero() {
             EST_OBJ="${EST_NOMS[$IDX_EST]}"
             SIG_BLOQUE="${EST_BLQS[$IDX_EST]}"
             NUM_BLOQUE="${EST_NUMS[$IDX_EST]}"
+            TOT_BLOQUES="${EST_TOTS[$IDX_EST]}"
             TAREA_ELEGIDA="estudio_${EST_OBJ}"
             PART_ELEGIDA="$(basename "$SIG_BLOQUE")"
             DIR_TAREA="$DIR_SUENO/$TAREA_ELEGIDA"
             mkdir -p "$DIR_TAREA"
+            COMP_PREV="[ ]"
+            if [[ -s "$DIR_TAREA/estado.json" ]]; then
+                CP_TMP=$(jq -a -c '.completados // [ ]' "$DIR_TAREA/estado.json" 2>/dev/null)
+                if [[ -n "$CP_TMP" ]]; then COMP_PREV="$CP_TMP"; fi
+            fi
             cp -f "$SIG_BLOQUE" "$DIR_TAREA/dataset.jsonl"
             rm -f "$DIR_TAREA/cache.pt" 2>/dev/null
             NUM_EJ=$(( $(wc -l < "$DIR_TAREA/dataset.jsonl") ))
@@ -416,8 +454,10 @@ fase_ligero() {
                 --arg dest "$EST_OBJ" \
                 --arg part "$PART_ELEGIDA" \
                 --argjson ep0 "$NUM_BLOQUE" \
+                --argjson totb "$TOT_BLOQUES" \
                 --argjson lr "${LR_ESTUDIO:-0.00025}" \
-                --argjson nej "${NUM_EJ:-0}" '{
+                --argjson nej "${NUM_EJ:-0}" \
+                --argjson comp "$COMP_PREV" '{
                 nombre: $nom,
                 destino: $dest,
                 particion: $part,
@@ -426,16 +466,19 @@ fase_ligero() {
                 fase: "profundo",
                 ciclo: 0,
                 epocas_obj: $ep0,
+                total_bloques: $totb,
                 mejor_epocas: 0,
                 lr: $lr,
                 num_ejemplos: $nej,
                 mejor_errores: 9999,
                 mejor_sim: 0.0,
-                reset_lr: 1
+                reset_lr: 1,
+                completados: $comp
             }' > "$DIR_TAREA/estado.json"
-            printf '%s\n' "$EST_OBJ" > "$DIR_SUENO/ultimo_estudio"
-            registrar_sueno "[N1/N2 ESTUDIO] Preparado bloque $PART_ELEGIDA ($NUM_EJ ejemplos, paso evolutivo #$NUM_BLOQUE) para $EST_OBJ ($TOT_EST carpetas activas)."
-            registrar_historial_sueno "Aprovecho el sueno para estudiar $EST_OBJ ($PART_ELEGIDA, $NUM_EJ ejemplos)."
+            printf '%s\n' "$TAREA_ELEGIDA" > "$DIR_SUENO/ultimo_turno"
+            rm -f "$DIR_SUENO/ultimo_estudio" 2>/dev/null
+            registrar_sueno "[N1/N2 ESTUDIO] Preparado bloque $PART_ELEGIDA ($NUM_BLOQUE/$TOT_BLOQUES, $NUM_EJ ejemplos) para $EST_OBJ (rotacion $TOT_EST carpetas)."
+            registrar_historial_sueno "Estudio $EST_OBJ: bloque $NUM_BLOQUE de $TOT_BLOQUES ($PART_ELEGIDA, $NUM_EJ ejemplos)."
         else
             registrar_sueno "[N1/N2 LIGERO] Sin memoria pendiente ni bloques de estudio pendientes."
         fi
@@ -986,22 +1029,24 @@ fase_profundo() {
             if [[ "$CLASE_T" == "estudio" ]]; then
                 DEST_EST=$(jq -r '.destino // empty' "$EST_F" 2>/dev/null)
                 PART_EST=$(jq -r '.particion // empty' "$EST_F" 2>/dev/null)
+                TOT_B_EST=$(jq -r '.total_bloques // 0' "$EST_F" 2>/dev/null)
                 if [[ -n "$DEST_EST" ]]; then
-                    if [[ -s "$DIR_T/candidato.gguf" ]]; then
-                        mkdir -p "$DIR_LORA_PESOS"
-                        OUT_EST="$DIR_LORA_PESOS/${DEST_EST}.gguf"
-                        if [[ -s "$OUT_EST" ]]; then
-                            if [[ ! -f "${OUT_EST}.bak" ]]; then
-                                cp -f "$OUT_EST" "${OUT_EST}.bak" 2>/dev/null
+                    if [[ "$DEST_EST" != "$LORA_BASE" ]]; then
+                        if [[ -s "$DIR_T/candidato.gguf" ]]; then
+                            mkdir -p "$DIR_LORA_PESOS"
+                            OUT_EST="$DIR_LORA_PESOS/${DEST_EST}.gguf"
+                            cp -f "$DIR_T/candidato.gguf" "${OUT_EST}.tmp" 2>/dev/null
+                            mv -f "${OUT_EST}.tmp" "$OUT_EST" 2>/dev/null
+                            EST_NUEVO=$(jq -a -c --arg part "$PART_EST" '
+                                ((.completados // [ ]) + (if ($part | length) > 0 then [$part] else [ ] end) | unique) as $comp |
+                                . + {fase: "completado", reset_lr: 0, completados: $comp}
+                            ' "$EST_F" 2>/dev/null)
+                            if [[ -n "$EST_NUEVO" ]]; then
+                                printf '%s\n' "$EST_NUEVO" > "${EST_F}.tmp"
+                                mv -f "${EST_F}.tmp" "$EST_F" 2>/dev/null
                             fi
-                        fi
-                        cp -f "$DIR_T/candidato.gguf" "${OUT_EST}.tmp" 2>/dev/null
-                        mv -f "${OUT_EST}.tmp" "$OUT_EST" 2>/dev/null
-                        if [[ -n "$PART_EST" ]]; then
-                            printf '%s\n' "$PART_EST" >> "$DIR_SUENO/estudio_${DEST_EST}.progreso"
-                        fi
-                        # Si no es el LoRA base y aun no tiene centroide en indice.json, calcularlo con :8082 para enrutamiento semantico
-                        if [[ "$DEST_EST" != "$LORA_BASE" ]]; then
+                            HECHOS_EST=$(jq -r '(.completados // [ ]) | length' "$EST_F" 2>/dev/null)
+                            if [[ -z "$HECHOS_EST" ]]; then HECHOS_EST=0; fi
                             TIENE_CENT=0
                             if [[ -s "$INDICE_LORA_DATASETS" ]]; then
                                 if jq -e -s --arg n "$DEST_EST" 'any(.[ ]; .nombre == $n and .embedding != null)' "$INDICE_LORA_DATASETS" >/dev/null 2>/dev/null; then
@@ -1045,13 +1090,10 @@ fase_profundo() {
                                     dormir_puerto "$PUERTO_MEMORIA"
                                 fi
                             fi
+                            rm -f "$DIR_MEM_LORA/huella" "$DIR_T/cache.pt" "$DIR_T/dataset.jsonl" "$DIR_SUENO/estudio_${DEST_EST}.progreso" 2>/dev/null
+                            registrar_sueno "[ESTUDIO] Bloque $PART_EST ($HECHOS_EST/$TOT_B_EST) consolidado en ${DEST_EST}.gguf."
+                            registrar_historial_sueno "Termine $PART_EST ($HECHOS_EST/$TOT_B_EST) y actualice $DEST_EST."
                         fi
-                        rm -f "$DIR_MEM_LORA/huella" "$DIR_T/cache.pt" "$DIR_T/dataset.jsonl" 2>/dev/null
-                        EST_NUEVO=$(jq -a -c '. + {fase: "completado", reset_lr: 0}' "$EST_F" 2>/dev/null)
-                        printf '%s\n' "$EST_NUEVO" > "${EST_F}.tmp"
-                        mv -f "${EST_F}.tmp" "$EST_F" 2>/dev/null
-                        registrar_sueno "[ESTUDIO] Bloque $PART_EST consolidado en ${DEST_EST}.gguf (checkpoint evolutivo conservado)."
-                        registrar_historial_sueno "Termine de estudiar $PART_EST y mejore $DEST_EST."
                     fi
                 fi
             else

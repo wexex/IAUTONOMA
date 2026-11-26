@@ -44,15 +44,12 @@ if [[ "$ARCH_MOD" == "--entrenar" ]]; then
         (
             if $crel >= 0.75 then
                 ([1, (($cores / 2) | floor)] | max)
-            elif ($crel >= 0.40 or $rpct < 0.40) then
-                ([1, ($cores - 1)] | max)
             else
-                $cores
+                ([1, ($cores - 1)] | max)
             end
         ) as $hilos |
         (
             if $pausar == 1 then "ESPERA_RAM"
-            elif $hilos >= $cores then "TOTAL"
             elif $hilos > ($cores / 2) then "EQUILIBRADO"
             else "SUAVE" end
         ) as $modo |
